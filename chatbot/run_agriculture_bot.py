@@ -53,9 +53,12 @@ def initialize_rag():
         chunks = text_splitter.split_documents(new_documents)
         print(f"Đã tạo ra {len(chunks)} chunks mới")
         
-        print("Đang gửi dữ liệu mới cho Gemini nhúng (Vui lòng chờ)...")
-        vectorstore.add_documents(chunks)
-        print("✅ Đã cập nhật xong dữ liệu mới vào hệ thống!")
+        if len(chunks) > 0:
+            print("Đang gửi dữ liệu mới cho Gemini nhúng (Vui lòng chờ)...")
+            vectorstore.add_documents(chunks)
+            print("✅ Đã cập nhật xong dữ liệu mới vào hệ thống!")
+        else:
+            print("⚠️ CẢNH BÁO: Tài liệu mới tải lên là file ảnh hoặc file rỗng (không có chữ dạng Text). Hệ thống đã bỏ qua.")
     else:
         print("✅ Không có tài liệu nào mới, tự động bỏ qua bước nhúng để tiết kiệm 100% Token API...")
 
