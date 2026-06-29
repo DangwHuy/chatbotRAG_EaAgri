@@ -1,6 +1,6 @@
 import os
 import uvicorn
-from pyngrok import ngrok
+from pyngrok import ngrok, conf
 from dotenv import load_dotenv
 
 def start_server():
@@ -11,6 +11,8 @@ def start_server():
         print("LỖI: Chưa có NGROK_AUTH_TOKEN trong file .env!")
         return
         
+    # Tăng thời gian chờ (timeout) cho ngrok nếu mạng chậm
+    conf.get_default().request_timeout = 30
     ngrok.set_auth_token(NGROK_AUTH_TOKEN)
 
     # 2. Tạo đường hầm (tunnel) kết nối cổng 8000 ra ngoài Internet

@@ -80,10 +80,12 @@ def run_ui():
         return
 
     system_template = """Bạn là Trợ lý AI nông nghiệp của dự án Ea Agri.
-Hãy xưng hô là "tôi" hoặc "Ea Agri", và gọi người dùng là "bà con" hoặc "bạn" một cách tự nhiên, gần gũi, không máy móc.
-Dựa vào tài liệu dưới đây, hãy trả lời câu hỏi ĐÚNG TRỌNG TÂM, VÀO THẲNG VẤN ĐỀ, NGẮN GỌN để bà con dễ hiểu.
-Tuyệt đối KHÔNG liệt kê dài dòng nếu không cần thiết.
-Nếu trong tài liệu tham khảo KHÔNG CÓ CÂU TRẢ LỜI, hãy nói rõ: "Dạ, phần này Ea Agri chưa có tài liệu hướng dẫn cụ thể, bà con thông cảm nhé." Tuyệt đối không tự bịa ra thông tin nếu tài liệu không nhắc tới."""
+Hãy xưng hô là "tôi" hoặc "Ea Agri", và gọi người dùng là "bà con" hoặc "bạn" một cách tự nhiên.
+Quy tắc trả lời:
+1. Nếu người dùng chỉ chào hỏi (ví dụ: "Hi", "Chào bạn", "Cảm ơn"): Hãy đáp lại lịch sự, thân thiện và KHÔNG nhắc đến nguồn tham khảo.
+2. Nếu người dùng hỏi kiến thức nông nghiệp: Hãy dựa vào tài liệu được cung cấp dưới đây để trả lời ngắn gọn, đúng trọng tâm. Ở ĐÚNG CUỐI câu trả lời, BẮT BUỘC phải tự động thêm dòng trích dẫn nguồn theo đúng định dạng: `\n\n*(Nguồn tham khảo: tên_file.pdf)*`.
+3. Nếu tài liệu KHÔNG chứa thông tin cho câu hỏi chuyên môn: Hãy thật thà đáp "Dạ, phần này Ea Agri chưa có tài liệu hướng dẫn cụ thể, bà con thông cảm nhé." và KHÔNG ghi nguồn tham khảo. Tuyệt đối không tự bịa ra thông tin.
+"""
 
     def chat(question, history):
         # Kết hợp câu hỏi hiện tại với câu hỏi trước đó để giữ ngữ cảnh tìm kiếm tài liệu
@@ -122,10 +124,7 @@ Nếu trong tài liệu tham khảo KHÔNG CÓ CÂU TRẢ LỜI, hãy nói rõ: 
                 
         messages.append(HumanMessage(content=prompt))
         response = llm.invoke(messages)
-        
-        # Nối thêm trích dẫn nguồn vào cuối câu trả lời
-        sources_str = ", ".join(source_names)
-        return response.content + f"\n\n*(Nguồn tham khảo: {sources_str})*"
+        return response.content
 
     print("Đang khởi chạy giao diện Chatbot...")
     # Loại bỏ tham số type="messages" không còn được hỗ trợ trên Gradio v6
