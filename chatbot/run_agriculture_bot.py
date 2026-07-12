@@ -1,8 +1,13 @@
 import os
 import glob
 import shutil
+from types import SimpleNamespace
 from dotenv import load_dotenv
-import gradio as gr
+import requests
+try:
+    import gradio as gr
+except ModuleNotFoundError:
+    gr = None
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
@@ -14,8 +19,50 @@ load_dotenv(override=True)
 os.environ['GOOGLE_API_KEY'] = os.getenv('GOOGLE_API_KEY', '')
 
 # Config
-MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 db_name = "vector_db_agri_gemini"
+
+
+class DeepSeekChat:
+    def __init__(self, model: str, temperature: float = 0.3):
+        self.model = model
+        self.temperature = temperature
+        self.api_key = os.getenv("DEEPSEEK_API_KEY", "")
+        self.base_url = DEEPSEEK_BASE_URL.rstrip("/")
+
+        if not self.api_key:
+            raise ValueError("Chua co DEEPSEEK_API_KEY trong file .env")
+
+    def _convert_message(self, message):
+        message_type = message.__class__.__name__
+        if message_type == "SystemMessage":
+            role = "system"
+        elif message_type == "AIMessage":
+            role = "assistant"
+        else:
+            role = "user"
+
+        return {"role": role, "content": message.content}
+
+    def invoke(self, messages):
+        response = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.model,
+                "temperature": self.temperature,
+                "messages": [self._convert_message(message) for message in messages],
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return SimpleNamespace(content=data["choices"][0]["message"]["content"])
 
 def initialize_rag():
     embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-2")
@@ -67,14 +114,21 @@ def initialize_rag():
     # Tăng số lượng tài liệu tham khảo (k) lên 5 để đảm bảo AI đọc đủ thông tin (rất quan trọng với bệnh phức tạp)
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
     # Bỏ max_tokens để AI không bị ngắt câu giữa chừng
-    llm = ChatGoogleGenerativeAI(temperature=0.3, model=MODEL)
+    llms = {
+        "gemini": ChatGoogleGenerativeAI(temperature=0.3, model=GEMINI_MODEL),
+        "deepseek": DeepSeekChat(temperature=0.3, model=DEEPSEEK_MODEL),
+    }
     
-    return retriever, llm
+    return retriever, llms
 
 def run_ui():
+    if gr is None:
+        print("Chua cai gradio, khong the chay giao dien local. API FastAPI van co the hoat dong.")
+        return
+
     print("Đang thiết lập hệ thống AI...")
     try:
-        retriever, llm = initialize_rag()
+        retriever, llms = initialize_rag()
     except Exception as e:
         print(f"Lỗi khởi tạo hệ thống: {e}")
         return
@@ -87,7 +141,9 @@ Quy tắc trả lời:
 3. Nếu tài liệu KHÔNG chứa thông tin cho câu hỏi chuyên môn: Hãy thật thà đáp "Dạ, phần này Ea Agri chưa có tài liệu hướng dẫn cụ thể, bà con thông cảm nhé." và KHÔNG ghi nguồn tham khảo. Tuyệt đối không tự bịa ra thông tin.
 """
 
-    def chat(question, history):
+    def chat(question, history, model_provider="gemini"):
+        selected_llm = llms.get(model_provider or "gemini", llms["gemini"])
+
         # Kết hợp câu hỏi hiện tại với câu hỏi trước đó để giữ ngữ cảnh tìm kiếm tài liệu
         search_query = question
         if history:
@@ -123,15 +179,22 @@ Quy tắc trả lời:
                 messages.append(AIMessage(content=msg[1]))
                 
         messages.append(HumanMessage(content=prompt))
-        response = llm.invoke(messages)
+        response = selected_llm.invoke(messages)
         return response.content
 
     print("Đang khởi chạy giao diện Chatbot...")
     # Loại bỏ tham số type="messages" không còn được hỗ trợ trên Gradio v6
     view = gr.ChatInterface(
         fn=chat, 
-        title="🌿 Chuyên Gia AI Nông Nghiệp (Gemini)",
-        description="Trợ lý AI tư vấn kỹ thuật canh tác sầu riêng. Năng lượng bởi Google Gemini."
+        title="🌿 Chuyên Gia AI Nông Nghiệp",
+        description="Trợ lý AI tư vấn kỹ thuật canh tác sầu riêng.",
+        additional_inputs=[
+            gr.Dropdown(
+                choices=["gemini", "deepseek"],
+                value="gemini",
+                label="Chon model"
+            )
+        ]
     ).launch(inbrowser=True)
 
 if __name__ == "__main__":

@@ -1,20 +1,20 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 # Import hàm khởi tạo từ file cũ để tận dụng logic có sẵn
 from run_agriculture_bot import initialize_rag
 
 app = FastAPI(
     title="Ea Agri Chatbot API",
-    description="API Server cho Chatbot Nông nghiệp tích hợp Gemini",
+    description="API Server cho Chatbot Nong nghiep tich hop Gemini va DeepSeek",
     version="1.0"
 )
 
 # Biến toàn cục để lưu bộ nhớ AI
 retriever = None
-llm = None
+llms = None
 
 system_template = """Bạn là Trợ lý AI nông nghiệp của dự án Ea Agri.
 Hãy xưng hô là "tôi" hoặc "Ea Agri", và gọi người dùng là "bà con" hoặc "bạn" một cách tự nhiên.
@@ -32,32 +32,114 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     question: str
     history: Optional[List[ChatMessage]] = []
+    model_provider: Optional[str] = "gemini"
 
 class ChatResponse(BaseModel):
     answer: str
     sources: List[str]
 
+
+def normalize_model_provider(payload: Dict[str, Any]) -> str:
+    raw_model = (
+        payload.get("model_provider")
+        or payload.get("modelProvider")
+        or payload.get("model")
+        or payload.get("llm")
+        or payload.get("provider")
+        or "gemini"
+    )
+    normalized = str(raw_model).lower().strip().replace(" ", "").replace("_", "").replace("-", "")
+
+    if normalized in {"gemini", "google", "googleai"}:
+        return "gemini"
+    if normalized in {"deepseek", "deepseekchat", "deepseekv3"}:
+        return "deepseek"
+
+    return normalized
+
+
+def normalize_history(raw_history: Any) -> List[Dict[str, str]]:
+    if not isinstance(raw_history, list):
+        return []
+
+    history = []
+    for item in raw_history:
+        if isinstance(item, dict):
+            raw_role = item.get("role") or item.get("sender") or item.get("type") or "user"
+            raw_content = (
+                item.get("content")
+                or item.get("message")
+                or item.get("text")
+                or item.get("answer")
+                or ""
+            )
+            role_value = str(raw_role).lower().strip()
+            role = "assistant" if role_value in {"assistant", "ai", "bot"} else "user"
+            content = str(raw_content).strip()
+            if content:
+                history.append({"role": role, "content": content})
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            user_content = str(item[0]).strip()
+            assistant_content = str(item[1]).strip()
+            if user_content:
+                history.append({"role": "user", "content": user_content})
+            if assistant_content:
+                history.append({"role": "assistant", "content": assistant_content})
+
+    return history
+
+
+def normalize_chat_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    raw_question = (
+        payload.get("question")
+        or payload.get("message")
+        or payload.get("content")
+        or payload.get("text")
+        or payload.get("prompt")
+    )
+    question = str(raw_question or "").strip()
+    if not question:
+        raise HTTPException(
+            status_code=400,
+            detail="Thieu noi dung cau hoi. Hay gui field question hoac message."
+        )
+
+    return {
+        "question": question,
+        "history": normalize_history(payload.get("history") or payload.get("messages") or []),
+        "model_provider": normalize_model_provider(payload),
+    }
+
 @app.on_event("startup")
 async def startup_event():
-    global retriever, llm
+    global retriever, llms
     print("Đang khởi tạo hệ thống AI cho FastAPI...")
-    retriever, llm = initialize_rag()
+    retriever, llms = initialize_rag()
     print("✅ Hệ thống AI đã sẵn sàng phục vụ App của bạn!")
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat_endpoint(request: ChatRequest):
-    if not retriever or not llm:
+async def chat_endpoint(payload: Dict[str, Any] = Body(...)):
+    if not retriever or not llms:
         raise HTTPException(status_code=500, detail="Hệ thống AI chưa sẵn sàng")
 
     from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
+    request = normalize_chat_payload(payload)
+    requested_model = request["model_provider"]
+    if requested_model not in llms:
+        raise HTTPException(
+            status_code=400,
+            detail="model_provider chi ho tro: gemini hoac deepseek"
+        )
+    selected_llm = llms[requested_model]
+
     try:
         # 1. Tìm kiếm tài liệu (RAG)
-        search_query = request.question
-        if request.history:
-            last_msg = request.history[-1]
-            if last_msg.role == "user":
-                search_query = last_msg.content + " - " + request.question
+        search_query = request["question"]
+        if request["history"]:
+            last_msg = request["history"][-1]
+            if last_msg["role"] == "user":
+                search_query = last_msg["content"] + " - " + request["question"]
                 
         docs = retriever.invoke(search_query)
         
@@ -70,24 +152,26 @@ async def chat_endpoint(request: ChatRequest):
             context_parts.append(f"[Nguồn: {source_file}]\n{doc.page_content}")
             
         context = "\n\n".join(context_parts)
-        prompt = f"Tài liệu tham khảo:\n{context}\n\nCâu hỏi của người dùng: {request.question}"
+        prompt = f"Tài liệu tham khảo:\n{context}\n\nCâu hỏi của người dùng: {request['question']}"
         
         # 3. Tạo lịch sử tin nhắn
         messages = [SystemMessage(content=system_template)]
-        for msg in request.history:
-            if msg.role == "user":
-                messages.append(HumanMessage(content=msg.content))
-            elif msg.role == "assistant":
-                messages.append(AIMessage(content=msg.content))
+        for msg in request["history"]:
+            if msg["role"] == "user":
+                messages.append(HumanMessage(content=msg["content"]))
+            elif msg["role"] == "assistant":
+                messages.append(AIMessage(content=msg["content"]))
                 
         messages.append(HumanMessage(content=prompt))
         
         # 4. Trả lời
-        response = llm.invoke(messages)
+        response = selected_llm.invoke(messages)
         
         return ChatResponse(
             answer=response.content,
             sources=list(source_names)
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
