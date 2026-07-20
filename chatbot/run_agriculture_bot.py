@@ -111,8 +111,8 @@ def initialize_rag():
 
     print(f"Vectorstore đã sẵn sàng với tổng cộng {vectorstore._collection.count()} chunks")
 
-    # Tăng số lượng tài liệu tham khảo (k) lên 5 để đảm bảo AI đọc đủ thông tin (rất quan trọng với bệnh phức tạp)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    # Lấy nhiều đoạn hơn một chút để giảm trường hợp tài liệu có nhưng retriever trả thiếu ngữ cảnh.
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 8})
     # Bỏ max_tokens để AI không bị ngắt câu giữa chừng
     llms = {
         "gemini": ChatGoogleGenerativeAI(temperature=0.3, model=GEMINI_MODEL),
