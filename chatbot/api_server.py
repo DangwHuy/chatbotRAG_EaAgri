@@ -1,7 +1,8 @@
 import os
 import re
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Header, Security, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,7 +19,9 @@ from run_agriculture_bot import initialize_rag
 app = FastAPI(
     title="Ea Agri Chatbot API",
     description="API Server cho Chatbot Nong nghiep tich hop Gemini va DeepSeek",
-    version="1.0"
+    version="1.0",
+    docs_url=None if os.getenv("DISABLE_DOCS", "false").lower() == "true" else "/docs",
+    redoc_url=None if os.getenv("DISABLE_DOCS", "false").lower() == "true" else "/redoc",
 )
 
 app.add_middleware(
@@ -534,6 +537,51 @@ def normalize_chat_payload(payload: Any) -> Dict[str, Any]:
         "user_id": user_id,
     }
 
+security = HTTPBearer(auto_error=False)
+
+def verify_security(
+    auth_credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+    x_firebase_token: Optional[str] = Header(None, alias="x-firebase-token")
+):
+    # 0. Nếu đang tắt bảo mật (để dev/test nội bộ)
+    if os.getenv("DISABLE_SECURITY", "false").lower() == "true":
+        return {"type": "disabled"}
+
+    # 1. Kiểm tra API Key bí mật nội bộ (nếu có cấu hình API_SECRET_KEY trong .env)
+    secret_key = os.getenv("API_SECRET_KEY", "").strip()
+    if secret_key:
+        if x_api_key == secret_key:
+            return {"type": "api_key", "user": "trusted_client"}
+        if auth_credentials and auth_credentials.credentials == secret_key:
+            return {"type": "api_key", "user": "trusted_client"}
+
+    # 2. Kiểm tra Firebase ID Token
+    token = None
+    if auth_credentials and auth_credentials.credentials:
+        token = auth_credentials.credentials
+    elif x_firebase_token:
+        token = x_firebase_token
+        
+    if not token:
+        raise HTTPException(
+            status_code=401, 
+            detail="Truy cập bị từ chối: Vui lòng gửi Firebase ID Token hoặc X-API-Key hợp lệ qua Header Authorization."
+        )
+        
+    try:
+        from farm_context import get_firestore_client
+        get_firestore_client() # Đảm bảo firebase_admin đã khởi tạo
+        
+        import firebase_admin
+        from firebase_admin import auth
+        
+        decoded_token = auth.verify_id_token(token)
+        return decoded_token
+    except Exception as e:
+        print(f"[Security] Lỗi xác thực Firebase Token: {e}")
+        raise HTTPException(status_code=401, detail="Token đăng nhập không hợp lệ hoặc đã hết hạn.")
+
 @app.on_event("startup")
 async def startup_event():
     global retriever, llms
@@ -541,7 +589,7 @@ async def startup_event():
     retriever, llms = initialize_rag()
     print("✅ Hệ thống AI đã sẵn sàng phục vụ App của bạn!")
 
-@app.post("/api/chat", response_model=ChatResponse)
+@app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(verify_security)])
 async def chat_endpoint(payload: Any = Body(...)):
     if not retriever or not llms:
         raise HTTPException(status_code=500, detail="Hệ thống AI chưa sẵn sàng")
@@ -625,7 +673,7 @@ async def chat_endpoint(payload: Any = Body(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/debug/farm-context", response_model=FarmContextDebugResponse)
+@app.get("/api/debug/farm-context", response_model=FarmContextDebugResponse, dependencies=[Depends(verify_security)])
 async def farm_context_debug(userId: str = Query(..., min_length=1)):
     if os.getenv("FARM_CONTEXT_DEBUG", "").lower() not in {"1", "true", "yes", "on"}:
         raise HTTPException(
