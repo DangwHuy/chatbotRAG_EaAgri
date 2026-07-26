@@ -15,9 +15,9 @@ jobs:
         script: |
           cd /root/my_fastapi_app
           git pull origin main
-          pkill -f main.py || true
-          pkill -f app_ai.py || true
+          pkill -f "python [m]ain.py" || true
+          pkill -f "python [a]pp_ai.py" || true
           source venv/bin/activate
-          pip install -r requirements.txt
+          pip install -r chatbot/requirements.txt || true
           nohup python main.py > log_main.txt 2>&1 &
           nohup python app_ai.py > log_ai.txt 2>&1 &
