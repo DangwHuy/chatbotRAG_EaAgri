@@ -2,3 +2,9 @@
 __pycache__/
 chatbot/vector_db_agri_gemini/
 *.pyc
+serviceAccountKey.json
+firebase-service-account.json
+chatbot/serviceAccountKey.json
+chatbot/firebase-service-account.json
+*firebase-adminsdk*.json
+chatbot/server-restart*.log
