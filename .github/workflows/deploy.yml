@@ -22,6 +22,7 @@ jobs:
           ps aux | awk '$11 ~ /python/ && $0 ~ /app_ai\.py/ {print $2}' | xargs -r kill -9 || true
           ps aux | awk '$11 ~ /(python|uvicorn)/ && $0 ~ /api_server:app/ {print $2}' | xargs -r kill -9 || true
           venv/bin/pip install -r chatbot/requirements.txt || true
-          nohup venv/bin/python main.py > log_main.txt 2>&1 &
-          nohup venv/bin/python app_ai.py > log_ai.txt 2>&1 &
-          cd chatbot && nohup ../venv/bin/uvicorn api_server:app --host 0.0.0.0 --port 8002 > log_rag.txt 2>&1 &
+          nohup venv/bin/python main.py </dev/null > log_main.txt 2>&1 &
+          nohup venv/bin/python app_ai.py </dev/null > log_ai.txt 2>&1 &
+          cd chatbot && nohup ../venv/bin/uvicorn api_server:app --host 0.0.0.0 --port 8002 </dev/null > log_rag.txt 2>&1 &
+          sleep 2
