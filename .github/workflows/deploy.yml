@@ -15,9 +15,10 @@ jobs:
         script: |
           cd /root/my_fastapi_app
           git pull origin main
-          pkill -f "python [m]ain.py" || true
-          pkill -f "python [a]pp_ai.py" || true
-          source venv/bin/activate
-          pip install -r chatbot/requirements.txt || true
-          nohup python main.py > log_main.txt 2>&1 &
-          nohup python app_ai.py > log_ai.txt 2>&1 &
+          fuser -k 8000/tcp || true
+          fuser -k 8001/tcp || true
+          ps aux | awk '$11 ~ /python/ && $0 ~ /main\.py/ {print $2}' | xargs -r kill -9 || true
+          ps aux | awk '$11 ~ /python/ && $0 ~ /app_ai\.py/ {print $2}' | xargs -r kill -9 || true
+          venv/bin/pip install -r chatbot/requirements.txt || true
+          nohup venv/bin/python main.py > log_main.txt 2>&1 &
+          nohup venv/bin/python app_ai.py > log_ai.txt 2>&1 &
