@@ -580,7 +580,7 @@ def verify_security(
         return decoded_token
     except Exception as e:
         print(f"[Security] Lỗi xác thực Firebase Token: {e}")
-        raise HTTPException(status_code=401, detail="Token đăng nhập không hợp lệ hoặc đã hết hạn.")
+        raise HTTPException(status_code=401, detail=f"Token đăng nhập không hợp lệ hoặc đã hết hạn. Chi tiết lỗi từ server: {str(e)}")
 
 @app.on_event("startup")
 async def startup_event():
