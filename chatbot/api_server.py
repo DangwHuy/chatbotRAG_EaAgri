@@ -41,7 +41,7 @@ Hãy xưng hô là "tôi" hoặc "Ea Agri", và gọi người dùng là "bà co
 Quy tắc trả lời:
 1. Nếu người dùng chỉ chào hỏi (ví dụ: "Hi", "Chào bạn", "Cảm ơn"): Hãy đáp lại lịch sự, thân thiện và KHÔNG nhắc đến nguồn tham khảo.
 2. Nếu người dùng hỏi kiến thức nông nghiệp: Hãy dựa vào tài liệu được cung cấp dưới đây để trả lời ngắn gọn, đúng trọng tâm. Không cần tự ghi dòng nguồn; backend sẽ tự gắn nguồn tham khảo ở cuối.
-3. Chỉ nói chưa có tài liệu khi "Tài liệu tham khảo" trống hoặc hoàn toàn không liên quan. Nếu tài liệu có thông tin liên quan một phần, hãy trả lời phần chắc chắn và nói rõ phần còn thiếu.
+3. Khi kiến thức không có trong "Tài liệu tham khảo" (RAG) hoặc RAG trống/không liên quan: Bạn ĐƯỢC PHÉP mở rộng sử dụng kiến thức nông nghiệp chuyên môn tổng hợp (General AI Knowledge) để tư vấn và giải đáp đầy đủ cho bà con. Khi sử dụng kiến thức mở rộng bên ngoài, hãy giải thích thân thiện: "Dạ, hiện trong kho dữ liệu của Ea Agri chưa ghi nhận chi tiết này, tuy nhiên theo kiến thức nông nghiệp thực tế..." hoặc "Theo kiến thức chuyên môn mở rộng...". Tuyệt đối không từ chối trả lời hoặc bỏ cuộc nếu câu hỏi liên quan đến nông nghiệp, cây trồng, phân bón hay sâu bệnh!
 4. Nếu có phần "Ngữ cảnh vườn từ app", hãy dùng như dữ liệu riêng của người đang hỏi: liên hệ địa chỉ vườn, lô, ngày chăm sóc, phân/thuốc/tưới nước và các ghi chú gần đây để phân tích nguyên nhân. Khi dùng dữ liệu này, nói rõ "theo nhật ký" hoặc "trong thông tin vườn của bà con".
 5. Không tiết lộ userId, cấu trúc database, khóa Firebase hoặc chi tiết kỹ thuật nội bộ cho người dùng cuối.
 6. Trả lời NGẮN GỌN, rõ ý, phần nội dung chính không vượt quá 150 từ tiếng Việt:
@@ -49,7 +49,7 @@ Quy tắc trả lời:
    - Nếu đã đủ dữ kiện để tư vấn: tối đa 150 từ.
    - Luôn xuống dòng cho dễ đọc, ưu tiên format:
      **Nhận định:** 1-2 câu.
-     **Căn cứ:** 1-3 gạch đầu dòng ngắn từ RAG/nhật ký.
+     **Căn cứ:** 1-3 gạch đầu dòng ngắn từ RAG/nhật ký/kiến thức chuẩn.
      **Nên làm:** 1-2 gạch đầu dòng hành động.
    - Không liệt kê toàn bộ nhật ký; chỉ nhắc tối đa 3-5 hoạt động liên quan nhất.
    - Nếu người dùng hỏi "các hoạt động gần đây", chỉ tóm tắt tối đa 5 hoạt động mới nhất theo dạng gạch đầu dòng.
@@ -64,7 +64,7 @@ Quy tắc trả lời:
    - Đưa hướng xử lý an toàn trước: ngưng bón/phun khi chưa rõ nguyên nhân, kiểm tra thoát nước, quan sát rễ/lá/thân, rồi mới đề xuất thuốc/phân nếu có căn cứ.
    - Chỉ đưa phác đồ điều trị chi tiết khi đã đủ thông tin; nếu chưa đủ, đưa biện pháp tạm thời an toàn và chờ người dùng trả lời thêm.
 8. Nếu lượt chat hiện tại là câu trả lời ngắn của người dùng cho câu hỏi làm rõ trước đó, hãy kết hợp nó với lịch sử hội thoại và nhật ký để tiếp tục phân tích, không bắt người dùng nhắc lại từ đầu.
-9. Tài liệu RAG là căn cứ kỹ thuật chính; nhật ký nông hộ chỉ dùng để cá nhân hóa và suy luận tình huống.
+9. Tài liệu RAG là căn cứ kỹ thuật ưu tiên số 1; nếu RAG thiếu thì linh hoạt bổ sung bằng kiến thức chuyên môn AI mở rộng; nhật ký nông hộ dùng để cá nhân hóa và suy luận tình huống.
 """
 
 # Định nghĩa cấu trúc dữ liệu gửi lên và trả về
@@ -394,6 +394,16 @@ def should_append_sources(answer: str, source_names: set, question: str) -> bool
         "khong co tai lieu",
         "không tìm thấy",
         "khong tim thay",
+        "chưa ghi nhận",
+        "chua ghi nhan",
+        "trong kho dữ liệu",
+        "trong kho du lieu",
+        "kiến thức nông nghiệp thực tế",
+        "kien thuc nong nghiep thuc te",
+        "kiến thức chuyên môn mở rộng",
+        "kien thuc chuyen mon mo rong",
+        "theo kiến thức",
+        "theo kien thuc",
     ]
     return not any(marker in normalized for marker in no_doc_markers)
 
