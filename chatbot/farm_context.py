@@ -575,9 +575,14 @@ def fetch_disease_images(question: str, answer: str) -> List[Dict[str, str]]:
 
             name = (data.get("name") or "").strip()
             tags = data.get("tags") or []
+            crops = data.get("crops") or []
+            
             if isinstance(tags, str):
                 tags = [tags]
+            if isinstance(crops, str):
+                crops = [crops]
 
+            # 1. Kiểm tra xem bệnh có khớp không (dựa vào name và tags)
             keywords = []
             if name:
                 clean_name = name.lower().replace("bệnh", "").strip()
@@ -590,15 +595,32 @@ def fetch_disease_images(question: str, answer: str) -> List[Dict[str, str]]:
                 if t_str and len(t_str) > 2:
                     keywords.append(t_str)
 
-            if any(kw in combined_text for kw in keywords):
-                if image_url not in seen_urls:
-                    seen_urls.add(image_url)
-                    matched_images.append({
-                        "name": name or "Hình ảnh bệnh",
-                        "imageUrl": image_url
-                    })
-                    if len(matched_images) >= 3:
+            is_disease_match = any(kw in combined_text for kw in keywords)
+            if not is_disease_match:
+                continue
+                
+            # 2. Kiểm tra loại cây trồng (crops) nếu database có khai báo
+            if crops:
+                crop_matched = False
+                for c in crops:
+                    c_str = str(c).lower().strip()
+                    # Nếu text có chứa tên cây (vd: "cà phê", "sầu riêng")
+                    if c_str and c_str in combined_text:
+                        crop_matched = True
                         break
+                
+                # Nếu database có gán loại cây, nhưng text không hề nhắc tới cây đó -> Bỏ qua ảnh này
+                if not crop_matched:
+                    continue
+
+            if image_url not in seen_urls:
+                seen_urls.add(image_url)
+                matched_images.append({
+                    "name": name or "Hình ảnh bệnh",
+                    "imageUrl": image_url
+                })
+                if len(matched_images) >= 3:
+                    break
                         
         return matched_images
     except Exception as exc:
