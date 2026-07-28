@@ -450,9 +450,10 @@ def finalize_answer(
     follow_up_questions: List[str],
     question: str,
 ) -> str:
-    max_words = 90 if follow_up_questions else 150
-    base_answer = remove_follow_up_section(answer) if follow_up_questions else answer
-    final_answer = compact_answer(base_answer, max_words)
+    # Lược bỏ câu trả lời dư thừa bằng cách loại bỏ các dòng ghi nguồn và câu hỏi làm rõ do LLM tự sinh
+    clean_answer = remove_source_lines(answer).strip()
+    base_answer = remove_follow_up_section(clean_answer) if follow_up_questions else clean_answer
+    final_answer = base_answer.strip()
 
     if should_append_sources(final_answer, source_names, question):
         final_answer += build_source_citation(source_names)
