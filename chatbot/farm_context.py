@@ -546,3 +546,62 @@ def get_farm_context(
         return context[:MAX_CONTEXT_CHARS].rstrip() + "\n... (đã rút gọn nhật ký do quá dài)"
 
     return context
+
+
+def fetch_disease_images(question: str, answer: str) -> List[Dict[str, str]]:
+    """
+    Truy vấn Firestore collection 'pest_diseases' để lấy hình ảnh bệnh minh họa
+    nếu câu hỏi hoặc câu trả lời có nhắc đến tên bệnh hoặc tags của bệnh đó.
+    """
+    try:
+        db = get_firestore_client()
+        if db is None:
+            return []
+
+        docs = db.collection("pest_diseases").stream()
+        
+        combined_text = f"{question} {answer}".lower()
+        matched_images = []
+        seen_urls = set()
+
+        for doc in docs:
+            data = doc.to_dict() or {}
+            if data.get("isActive") is False:
+                continue
+                
+            image_url = (data.get("imageUrl") or "").strip()
+            if not image_url or not image_url.startswith("http"):
+                continue
+
+            name = (data.get("name") or "").strip()
+            tags = data.get("tags") or []
+            if isinstance(tags, str):
+                tags = [tags]
+
+            keywords = []
+            if name:
+                clean_name = name.lower().replace("bệnh", "").strip()
+                if clean_name and len(clean_name) > 2:
+                    keywords.append(clean_name)
+                keywords.append(name.lower())
+            
+            for t in tags:
+                t_str = str(t).lower().strip()
+                if t_str and len(t_str) > 2:
+                    keywords.append(t_str)
+
+            if any(kw in combined_text for kw in keywords):
+                if image_url not in seen_urls:
+                    seen_urls.add(image_url)
+                    matched_images.append({
+                        "name": name or "Hình ảnh bệnh",
+                        "imageUrl": image_url
+                    })
+                    if len(matched_images) >= 3:
+                        break
+                        
+        return matched_images
+    except Exception as exc:
+        print(f"[farm_context] Lỗi khi truy vấn pest_diseases: {exc}")
+        return []
+

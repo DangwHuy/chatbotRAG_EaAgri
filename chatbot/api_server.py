@@ -13,6 +13,7 @@ from farm_context import (
     get_farm_context,
     get_firestore_client,
     mask_user_id,
+    fetch_disease_images,
 )
 from run_agriculture_bot import initialize_rag
 
@@ -85,12 +86,18 @@ class FollowUpOption(BaseModel):
     options: List[str]
 
 
+class DiseaseImage(BaseModel):
+    name: str
+    imageUrl: str
+
+
 class ChatResponse(BaseModel):
     answer: str
     sources: List[str]
     needs_follow_up: bool = False
     follow_up_questions: List[str] = []
     follow_up_options: List[FollowUpOption] = []
+    images: List[DiseaseImage] = []
 
 
 class FarmContextDebugResponse(BaseModel):
@@ -670,12 +677,19 @@ async def chat_endpoint(payload: Any = Body(...)):
             request["question"],
         )
         
+        disease_images_data = fetch_disease_images(request["question"], answer)
+        disease_images = [
+            DiseaseImage(name=item["name"], imageUrl=item["imageUrl"])
+            for item in disease_images_data
+        ]
+        
         return ChatResponse(
             answer=answer,
             sources=list(source_names),
             needs_follow_up=bool(follow_up_questions),
             follow_up_questions=follow_up_questions,
             follow_up_options=follow_up_options,
+            images=disease_images,
         )
     except HTTPException:
         raise
