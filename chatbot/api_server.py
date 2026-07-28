@@ -61,10 +61,10 @@ Quy tắc trả lời:
    - Sau đó đối chiếu với "Nhật ký nông hộ liên quan đến câu hỏi", đặc biệt các hoạt động vài ngày gần đây như bón phân, phun thuốc, tưới nước, mưa/ngập, cắt tỉa, quan sát.
    - Nêu tối đa 2-3 nguyên nhân khả nghi theo mức độ liên quan, không khẳng định chắc chắn nếu thiếu bằng chứng.
    - Nếu câu hỏi + nhật ký chưa đủ dữ kiện để chẩn đoán, hãy hỏi lại 1-3 câu ngắn, cụ thể.
-   - Khi hỏi lại, đặt mục cuối đúng tiêu đề `Cần hỏi thêm:` rồi liệt kê từng câu hỏi bằng gạch đầu dòng.
+   - Khi hỏi lại để làm rõ, đặt mục cuối cùng đúng tiêu đề `Cần hỏi thêm:` rồi liệt kê từng câu hỏi bằng gạch đầu dòng. Ngay trong mỗi câu hỏi, BẮT BUỘC gợi ý 2-4 lựa chọn trả lời ngắn gọn, liên quan mật thiết đến câu hỏi đó trong ngoặc vuông `[...]` (ví dụ: `- Bệnh xuất hiện ở mặt trên hay mặt dưới lá? [Mặt trên lá, Mặt dưới lá, Cả hai mặt]`, `- Vết bệnh lây lan nhanh hay chậm? [Rất nhanh, Chậm rải rác, Mới phát hiện]`).
    - Đưa hướng xử lý an toàn trước: ngưng bón/phun khi chưa rõ nguyên nhân, kiểm tra thoát nước, quan sát rễ/lá/thân, rồi mới đề xuất thuốc/phân nếu có căn cứ.
    - Chỉ đưa phác đồ điều trị chi tiết khi đã đủ thông tin; nếu chưa đủ, đưa biện pháp tạm thời an toàn và chờ người dùng trả lời thêm.
-8. Nếu lượt chat hiện tại là câu trả lời ngắn của người dùng cho câu hỏi làm rõ trước đó, hãy kết hợp nó với lịch sử hội thoại và nhật ký để tiếp tục phân tích, không bắt người dùng nhắc lại từ đầu.
+8. QUY TẮC NHỚ LỊCH SỬ HỘI THOẠI & PHÂN TÍCH TIẾP (CRITICAL MEMORY): Khi người dùng trả lời bổ sung thông tin cho các câu hỏi làm rõ trước đó (ví dụ có từ khóa 'Bổ sung thông tin:', 'Trả lời thêm:' hoặc các lựa chọn), BẮT BUỘC bạn phải ĐỌC LẠI toàn bộ các tin nhắn trước trong lịch sử (đặc biệt là triệu chứng ban đầu người dùng hỏi và phán đoán của bạn ở lượt trước). Hãy tổng hợp triệu chứng cũ + thông tin bổ sung mới để đưa ra Kết luận chẩn đoán chính xác và phác đồ điều trị cụ thể. KHÔNG ĐƯỢC hỏi lại những câu đã hỏi, và KHÔNG BẮT người dùng mô tả lại từ đầu!
 9. Tài liệu RAG là căn cứ kỹ thuật ưu tiên số 1; nếu RAG thiếu thì linh hoạt bổ sung bằng kiến thức chuyên môn AI mở rộng; nhật ký nông hộ dùng để cá nhân hóa và suy luận tình huống.
 """
 
@@ -236,7 +236,7 @@ def extract_follow_up_questions(answer: str, limit: int = 3) -> List[str]:
 
         if in_follow_up_section:
             question = _clean_follow_up_question(stripped)
-            if question.endswith("?") and question not in questions:
+            if ("?" in question or len(question) > 10) and question not in questions:
                 questions.append(question)
             if len(questions) >= limit:
                 break
@@ -244,7 +244,7 @@ def extract_follow_up_questions(answer: str, limit: int = 3) -> List[str]:
     if questions:
         return questions[:limit]
 
-    for match in re.findall(r"([^?\n]{8,}\?)", answer):
+    for match in re.findall(r"([^?\n]{8,}\?(?:\s*\[[^\]]+\]|\s*\([^\)]+\))?)", answer):
         question = _clean_follow_up_question(match)
         if question and question not in questions:
             questions.append(question)
@@ -255,37 +255,61 @@ def extract_follow_up_questions(answer: str, limit: int = 3) -> List[str]:
 
 
 def _default_follow_up_options(question: str) -> List[str]:
-    normalized = question.lower()
+    # 1. Ưu tiên trích xuất option nằm trong ngoặc vuông [...] hoặc (...) từ câu hỏi do AI tạo ra
+    match = re.search(r"\[([^\]]+)\]|\(([^)]+)\)", question)
+    if match:
+        raw_opts = match.group(1) or match.group(2)
+        opts = [o.strip() for o in re.split(r",|/|\|", raw_opts) if o.strip()]
+        if len(opts) >= 2:
+            return opts[:4]
 
-    if any(keyword in normalized for keyword in ("lá", "la", "rụng", "rung", "vàng", "vang")):
-        return ["Lá non", "Lá già", "Cả lá non và lá già", "Không rõ"]
+    clean_q = re.sub(r"\[[^\]]*\]|\([^\)]*\)", "", question).strip().lower()
 
-    if any(keyword in normalized for keyword in ("đất", "dat", "úng", "ung", "nước", "nuoc", "thoát", "thoat")):
-        return ["Đất khô", "Ẩm bình thường", "Đang úng/nước đọng", "Không rõ"]
+    # 2. Nhận diện ngữ nghĩa thông minh theo chuyên môn chẩn đoán bệnh nông nghiệp
+    if any(k in clean_q for k in ("mặt trên", "mặt dưới", "hai mặt", "mặt lá")):
+        return ["Mặt trên lá", "Mặt dưới lá", "Cả hai mặt lá", "Không rõ"]
 
-    if any(keyword in normalized for keyword in ("rễ", "re", "gốc", "goc", "thối", "thoi")):
-        return ["Rễ trắng khỏe", "Rễ nâu/thối", "Chưa kiểm tra", "Không rõ"]
+    if any(k in clean_q for k in ("bộ phận", "vị trí", "ở đâu", "ngọn", "gốc", "thân", "cành")):
+        return ["Ở lá non/ngọn", "Ở lá già/gốc", "Trên thân/cành", "Cả cây"]
 
-    if any(keyword in normalized for keyword in ("phân", "phan", "bón", "bon", "liều", "lieu")):
-        return ["Đúng liều", "Hơi cao", "Quá liều", "Không rõ"]
+    if any(k in clean_q for k in ("lá non", "lá già", "bánh tẻ")):
+        return ["Lá non (đọt non)", "Lá già / lá bánh tẻ", "Cả lá non và già", "Không rõ"]
 
-    if any(keyword in normalized for keyword in ("thuốc", "thuoc", "phun")):
-        return ["Mới phun 1-3 ngày", "Phun hơn 1 tuần", "Chưa phun", "Không rõ"]
+    if any(k in clean_q for k in ("màu sắc", "màu gì", "hình dạng", "sũng nước", "cháy bìa", "đốm")):
+        return ["Đốm nâu/đen thâm", "Cháy khô mép lá", "Vàng sũng nước", "Không rõ"]
 
-    if any(keyword in normalized for keyword in ("mấy ngày", "may ngay", "bao lâu", "bao lau", "khi nào", "khi nao")):
-        return ["1-2 ngày", "3-7 ngày", "Hơn 1 tuần", "Không rõ"]
+    if any(k in clean_q for k in ("rễ", "cổ rễ", "thối rễ", "nhớt")):
+        return ["Rễ trắng khỏe", "Rễ nâu/thối", "Chưa đào kiểm tra", "Không rõ"]
 
-    if any(keyword in normalized for keyword in ("lô", "lo", "vườn", "vuon", "cây", "cay")):
-        return ["Một vài cây", "Cả lô", "Nhiều lô", "Không rõ"]
+    if any(k in clean_q for k in ("đất", "úng", "thoát nước", "ẩm")):
+        return ["Đất ẩm úng/đọng nước", "Đất khô ráo bình thường", "Mới mưa nhiều", "Không rõ"]
+
+    if any(k in clean_q for k in ("phân", "bón", "thuốc", "phun", "xử lý", "chăm sóc")):
+        return ["Mới phun/bón gần đây", "Chưa xử lý gì", "Đã dùng nhưng không đỡ", "Không nhớ"]
+
+    if any(k in clean_q for k in ("mấy ngày", "bao lâu", "khi nào", "từ bao giờ", "thời gian")):
+        return ["Mới 1-2 ngày nay", "Khoảng 3-7 ngày", "Hơn 1 tuần rồi", "Không nhớ"]
+
+    if any(k in clean_q for k in ("mức độ", "lan rộng", "tốc độ", "nhanh hay chậm", "nặng hay nhẹ")):
+        return ["Mới xuất hiện nhẹ", "Đang lan trung bình", "Bị nặng nhiều cây", "Không rõ"]
+
+    if any(k in clean_q for k in ("lô", "vườn", "mấy cây", "cây nào", "rải rác")):
+        return ["Chỉ rải rác vài cây", "Bị cả lô / nhiều cây", "Lây lan cả vườn", "Không rõ"]
+
+    if any(k in clean_q for k in ("có kèm theo", "có bị", "có phải", "đúng không", "chưa")):
+        return ["Có hiện tượng này", "Không có", "Chưa để ý / Không rõ"]
 
     return ["Có", "Không", "Không rõ", "Cần kiểm tra thêm"]
 
 
 def build_follow_up_options(questions: List[str]) -> List[Dict[str, Any]]:
-    return [
-        {"question": question, "options": _default_follow_up_options(question)}
-        for question in questions[:3]
-    ]
+    result = []
+    for q in questions[:3]:
+        opts = _default_follow_up_options(q)
+        # Loại bỏ ngoặc vuông chứa option ra khỏi tiêu đề câu hỏi để hiển thị trên UI sạch đẹp hơn
+        clean_q = re.sub(r"\s*(\[[^\]]*\]|\([^\)]*\))\s*$", "", q).strip()
+        result.append({"question": clean_q, "options": opts})
+    return result
 
 
 def remove_source_lines(answer: str) -> str:
