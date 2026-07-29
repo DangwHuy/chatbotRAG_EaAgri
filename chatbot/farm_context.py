@@ -595,7 +595,19 @@ def fetch_disease_images(question: str, answer: str) -> List[Dict[str, str]]:
                 if t_str and len(t_str) > 2:
                     keywords.append(t_str)
 
-            is_disease_match = any(kw in combined_text for kw in keywords)
+            # Loại bỏ các từ khóa trùng với tên cây trồng (để tránh lấy ảnh bệnh khi chỉ nhắc đến tên cây)
+            crop_lower_list = [str(c).lower().strip() for c in crops if c]
+            filtered_keywords = []
+            for kw in keywords:
+                if kw in crop_lower_list:
+                    continue
+                filtered_keywords.append(kw)
+
+            # Nếu không còn từ khoá bệnh nào hợp lệ sau khi lọc, bỏ qua
+            if not filtered_keywords:
+                continue
+
+            is_disease_match = any(kw in combined_text for kw in filtered_keywords)
             if not is_disease_match:
                 continue
                 
