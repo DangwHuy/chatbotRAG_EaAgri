@@ -53,7 +53,8 @@ Nhiệm vụ: Chẩn đoán nguyên nhân cốt lõi và đưa ra phác đồ đ
 QUAN TRỌNG: Nông dân rất bận và không thích đọc dài. BẮT BUỘC trả lời thật NGẮN GỌN, SÚC TÍCH (tối đa 200 - 250 chữ). TUYỆT ĐỐI KHÔNG dùng câu văn dài dòng lê thê. Dùng các gạch đầu dòng ngắn, làm nổi bật từ khóa chính (tên thuốc, hành động).
 
 CRITICAL RULE ĐỐI VỚI NHẬT KÝ VƯỜN: 
-Nông dân có thể sở hữu nhiều mảnh vườn khác nhau. Tên vườn được ghi trong ngoặc vuông (vd: [Vườn Của Huy], [Vườn Chú Hai]) ở đầu mỗi hoạt động. TUYỆT ĐỐI KHÔNG gộp chung hay nhầm lẫn các hoạt động của Vườn A sang Vườn B để tránh chẩn đoán sai (ví dụ: vườn A bón phân, vườn B bón phân thì không phải là bón 2 lần cho 1 cây). Phải phân tích tách bạch!
+1. Nông dân có thể sở hữu nhiều mảnh vườn khác nhau. Tên vườn được ghi trong ngoặc vuông (vd: [Vườn Của Huy], [Vườn Chú Hai]) ở đầu mỗi hoạt động. TUYỆT ĐỐI KHÔNG gộp chung các hoạt động của Vườn A sang Vườn B để tránh chẩn đoán sai.
+2. Nếu người dùng đưa ra thông tin SAI so với nhật ký (ví dụ: họ nói "hôm qua và hôm kia tôi bón phân liên tục 2 ngày" nhưng nhật ký ghi 2 ngày bón cho 2 VƯỜN KHÁC NHAU, hoặc ghi ngày khác xa nhau), BẠN PHẢI TỈNH TÁO PHẢN BÁC LẠI NGAY LẬP TỨC: "Khoan đã, theo nhật ký thì..." để đính chính sự thật! KHÔNG ĐƯỢC hùa theo người dùng!
 
 Cấu trúc câu trả lời bắt buộc (ngắn gọn):
 1. 🔍 Nguyên nhân gốc rễ: 1-2 câu chỉ thẳng vấn đề. Đối chiếu nhanh với Nhật ký vườn xem có sai sót canh tác không (nếu có).
@@ -623,11 +624,12 @@ def analyze_user_intent(question: str, history: List[Dict[str, str]], llm) -> st
     from langchain_core.messages import SystemMessage, HumanMessage
     
     prompt = f"""Bạn là một hệ thống phân loại ý định người dùng (Intent Router) cho Chatbot Nông nghiệp.
-Dựa vào câu hỏi hiện tại và lịch sử chat, hãy phân loại ý định của người dùng vào ĐÚNG 1 TRONG 3 NHÓM sau (chỉ trả về TÊN NHÓM, không giải thích gì thêm):
+Dựa vào câu hỏi hiện tại và lịch sử chat, hãy phân loại ý định của người dùng vào ĐÚNG 1 TRONG 4 NHÓM sau (chỉ trả về TÊN NHÓM, không giải thích gì thêm):
 
-1. GREETING_OR_GENERAL: Người dùng chỉ chào hỏi, cảm ơn, tán gẫu, hoặc hỏi những câu không liên quan đến kỹ thuật nông nghiệp.
-2. FARM_QUERY: Người dùng hỏi kiến thức nông nghiệp chung chung (ví dụ: thời gian thu hoạch, cách trồng, kỹ thuật bón phân chung, giá cả).
-3. DISEASE_DIAGNOSIS: Người dùng mô tả triệu chứng bất thường của cây, hỏi về bệnh, sâu hại, vàng lá, rụng trái, thối rễ, hoặc cần phác đồ điều trị, thuốc bảo vệ thực vật.
+1. GREETING_OR_GENERAL: Người dùng chỉ chào hỏi, cảm ơn, tán gẫu.
+2. FARM_QUERY: Người dùng hỏi kiến thức nông nghiệp chung chung (ví dụ: thời gian thu hoạch, kỹ thuật bón phân chung).
+3. FARM_INFO: Người dùng hỏi thông tin về cá nhân họ, vườn của họ (ví dụ: "tôi có bao nhiêu vườn", "hoạt động gần đây của tôi", "tổng số vườn").
+4. DISEASE_DIAGNOSIS: Người dùng mô tả triệu chứng bất thường của cây, hỏi về bệnh, vàng lá, rụng trái, hoặc cần tư vấn phác đồ điều trị cho vườn của họ.
 
 Lịch sử chat gần nhất: {history[-2:] if history else 'Không có'}
 Câu hỏi của người dùng: "{question}"
@@ -637,6 +639,7 @@ Kết quả phân loại (chỉ xuất tên nhóm):"""
         response = llm.invoke([SystemMessage(content="Chỉ trả về tên nhóm."), HumanMessage(content=prompt)])
         intent = response.content.strip().upper()
         if "DISEASE_DIAGNOSIS" in intent: return "DISEASE_DIAGNOSIS"
+        if "FARM_INFO" in intent: return "FARM_INFO"
         if "FARM_QUERY" in intent: return "FARM_QUERY"
         return "GREETING_OR_GENERAL"
     except:
@@ -698,9 +701,9 @@ async def chat_endpoint(payload: Any = Body(...)):
                 f"sources={sorted(source_names)}"
             )
 
-        # 4. Lấy nhật ký vườn (Chỉ khi chẩn đoán bệnh)
+        # 4. Lấy nhật ký vườn (Chỉ khi chẩn đoán bệnh hoặc hỏi thông tin vườn)
         farm_context = ""
-        if intent == "DISEASE_DIAGNOSIS":
+        if intent in ["DISEASE_DIAGNOSIS", "FARM_INFO"]:
             farm_context = get_farm_context(request.get("user_id"), analysis_query)
             print(
                 "[api/chat] "

@@ -55,10 +55,16 @@ FIELD_LABELS = {
     "village": "Thôn/buôn",
     "ward": "Xã/phường",
     "weather": "Thời tiết",
+    "name": "Tên vườn",
+    "area": "Diện tích (ha)",
+    "certifications": "Chứng nhận",
 }
 
 ADDRESS_PRIORITY = [
+    "name",
     "farmName",
+    "area",
+    "certifications",
     "address",
     "addressLine",
     "village",
@@ -463,22 +469,19 @@ def fetch_farm_records(user_id: str, diary_limit: int = DEFAULT_DIARY_LIMIT) -> 
     if db is None:
         return [], []
 
-    # 1. Lấy mapping Tên vườn từ collection farms
+    # 1. Lấy danh sách vườn từ collection farms
     farm_mapping = {}
+    farms_list = []
     try:
         farms_docs = db.collection("farms").where("ownerId", "==", user_id).stream()
         for f in farms_docs:
             f_data = f.to_dict() or {}
-            farm_mapping[f.id] = f_data.get("name", f"Vườn {f.id[-4:]}")
+            f_name = f_data.get("name", f"Vườn {f.id[-4:]}")
+            farm_mapping[f.id] = f_name
+            farms_list.append((f.id, f_data))
     except Exception as e:
         print(f"Lỗi khi lấy thông tin farms: {e}")
 
-    address_docs = (
-        db.collection("users")
-        .document(user_id)
-        .collection("farmAddress")
-        .stream()
-    )
     diary_docs = (
         db.collection("farm_diary")
         .document(user_id)
@@ -501,7 +504,7 @@ def fetch_farm_records(user_id: str, diary_limit: int = DEFAULT_DIARY_LIMIT) -> 
             data["farmName"] = "[Vườn Mặc Định]"
         diary_records.append((doc.id, data))
 
-    return _stream_to_dicts(address_docs), diary_records
+    return farms_list, diary_records
 
 
 def format_farm_context(
