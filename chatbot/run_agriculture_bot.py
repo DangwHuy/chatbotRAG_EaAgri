@@ -112,14 +112,17 @@ def initialize_rag():
     print(f"Vectorstore đã sẵn sàng với tổng cộng {vectorstore._collection.count()} chunks")
 
     # Lấy nhiều đoạn hơn một chút để giảm trường hợp tài liệu có nhưng retriever trả thiếu ngữ cảnh.
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 8})
+    retrievers = {
+        "standard": vectorstore.as_retriever(search_kwargs={"k": 4}),
+        "expert": vectorstore.as_retriever(search_kwargs={"k": 12}),
+    }
     # Bỏ max_tokens để AI không bị ngắt câu giữa chừng
     llms = {
         "gemini": ChatGoogleGenerativeAI(temperature=0.3, model=GEMINI_MODEL),
         "deepseek": DeepSeekChat(temperature=0.3, model=DEEPSEEK_MODEL),
     }
     
-    return retriever, llms
+    return retrievers, llms
 
 def run_ui():
     if gr is None:
@@ -128,7 +131,7 @@ def run_ui():
 
     print("Đang thiết lập hệ thống AI...")
     try:
-        retriever, llms = initialize_rag()
+        retrievers, llms = initialize_rag()
     except Exception as e:
         print(f"Lỗi khởi tạo hệ thống: {e}")
         return
@@ -148,6 +151,7 @@ Quy tắc trả lời:
 
     def chat(question, history, model_provider="gemini"):
         selected_llm = llms.get(model_provider or "gemini", llms["gemini"])
+        selected_retriever = retrievers.get("expert") if model_provider == "deepseek" else retrievers.get("standard")
 
         search_query = question
         if history:
@@ -157,7 +161,7 @@ Quy tắc trả lời:
             elif isinstance(last_msg, (list, tuple)) and len(last_msg) == 2:
                 search_query = last_msg[0] + " - " + question
                 
-        docs = retriever.invoke(search_query)
+        docs = selected_retriever.invoke(search_query)
         
         # Trích xuất tên các file làm nguồn tham khảo
         context_parts = []
