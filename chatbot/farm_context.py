@@ -72,6 +72,7 @@ ADDRESS_PRIORITY = [
 ]
 
 DIARY_PRIORITY = [
+    "farmName",
     "date",
     "category",
     "crop",
@@ -457,9 +458,20 @@ def _stream_to_dicts(docs: Iterable[Any]) -> List[Tuple[str, Dict[str, Any]]]:
 
 
 def fetch_farm_records(user_id: str, diary_limit: int = DEFAULT_DIARY_LIMIT) -> Tuple[List[Tuple[str, Dict[str, Any]]], List[Tuple[str, Dict[str, Any]]]]:
+    from firebase_admin.firestore import Query
     db = get_firestore_client()
     if db is None:
         return [], []
+
+    # 1. Lấy mapping Tên vườn từ collection farms
+    farm_mapping = {}
+    try:
+        farms_docs = db.collection("farms").where("ownerId", "==", user_id).stream()
+        for f in farms_docs:
+            f_data = f.to_dict() or {}
+            farm_mapping[f.id] = f_data.get("name", f"Vườn {f.id[-4:]}")
+    except Exception as e:
+        print(f"Lỗi khi lấy thông tin farms: {e}")
 
     address_docs = (
         db.collection("users")
@@ -471,12 +483,25 @@ def fetch_farm_records(user_id: str, diary_limit: int = DEFAULT_DIARY_LIMIT) -> 
         db.collection("farm_diary")
         .document(user_id)
         .collection("entries")
-        .order_by("date", direction=firestore.Query.DESCENDING)
+        .order_by("date", direction=Query.DESCENDING)
         .limit(diary_limit)
         .stream()
     )
 
-    return _stream_to_dicts(address_docs), _stream_to_dicts(diary_docs)
+    diary_records = []
+    for doc in diary_docs:
+        data = doc.to_dict() or {}
+        # Gắn tên vườn vào dữ liệu
+        farm_id = data.get("traceabilityFarmId")
+        if farm_id and farm_id in farm_mapping:
+            data["farmName"] = f"[{farm_mapping[farm_id]}]"
+        elif farm_id:
+            data["farmName"] = f"[Vườn {farm_id[-4:]}]"
+        else:
+            data["farmName"] = "[Vườn Mặc Định]"
+        diary_records.append((doc.id, data))
+
+    return _stream_to_dicts(address_docs), diary_records
 
 
 def format_farm_context(
