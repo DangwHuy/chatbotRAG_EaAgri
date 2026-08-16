@@ -632,6 +632,29 @@ def verify_security(
         print(f"[Security] Lỗi xác thực Firebase Token: {e}")
         raise HTTPException(status_code=401, detail=f"Token đăng nhập không hợp lệ hoặc đã hết hạn. Chi tiết lỗi từ server: {str(e)}")
 
+def analyze_user_intent(question: str, history: List[Dict[str, str]], llm) -> str:
+    from langchain_core.messages import SystemMessage, HumanMessage
+    
+    prompt = f"""Bạn là một hệ thống phân loại ý định người dùng (Intent Router) cho Chatbot Nông nghiệp.
+Dựa vào câu hỏi hiện tại và lịch sử chat, hãy phân loại ý định của người dùng vào ĐÚNG 1 TRONG 3 NHÓM sau (chỉ trả về TÊN NHÓM, không giải thích gì thêm):
+
+1. GREETING_OR_GENERAL: Người dùng chỉ chào hỏi, cảm ơn, tán gẫu, hoặc hỏi những câu không liên quan đến kỹ thuật nông nghiệp.
+2. FARM_QUERY: Người dùng hỏi kiến thức nông nghiệp chung chung (ví dụ: thời gian thu hoạch, cách trồng, kỹ thuật bón phân chung, giá cả).
+3. DISEASE_DIAGNOSIS: Người dùng mô tả triệu chứng bất thường của cây, hỏi về bệnh, sâu hại, vàng lá, rụng trái, thối rễ, hoặc cần phác đồ điều trị, thuốc bảo vệ thực vật.
+
+Lịch sử chat gần nhất: {history[-2:] if history else 'Không có'}
+Câu hỏi của người dùng: "{question}"
+
+Kết quả phân loại (chỉ xuất tên nhóm):"""
+    try:
+        response = llm.invoke([SystemMessage(content="Chỉ trả về tên nhóm."), HumanMessage(content=prompt)])
+        intent = response.content.strip().upper()
+        if "DISEASE_DIAGNOSIS" in intent: return "DISEASE_DIAGNOSIS"
+        if "FARM_QUERY" in intent: return "FARM_QUERY"
+        return "GREETING_OR_GENERAL"
+    except:
+        return "DISEASE_DIAGNOSIS"  # Fallback an toàn
+
 @app.on_event("startup")
 async def startup_event():
     global retriever, llms
@@ -654,20 +677,22 @@ async def chat_endpoint(payload: Any = Body(...)):
     selected_llm = llms[requested_model]
 
     try:
-        # 1. Kiểm tra xem có phải câu chào hỏi ngắn không (để tối ưu Token)
-        clean_q = request["question"].strip().lower()
-        is_greeting = clean_q in ["hi", "hello", "chào", "chào bạn", "chào ad", "alo", "có ai không", "dạ"]
+        # 1. Phân loại ý định bằng LLM siêu nhẹ (Router)
+        router_llm = llms.get("gemini", selected_llm)
+        intent = analyze_user_intent(request["question"], request["history"], router_llm)
+        print(f"[Router] User Intent: {intent}")
         
         docs = []
-        if not is_greeting:
-            # Chỉ tìm kiếm tài liệu (RAG) nếu KHÔNG phải câu chào
+        retrieval_query = ""
+        analysis_query = request["question"].strip().lower()
+
+        # 2. Xử lý RAG nếu không phải chào hỏi
+        if intent != "GREETING_OR_GENERAL":
             retrieval_query = build_retrieval_query(request["question"], request["history"])
             docs = retriever.invoke(retrieval_query)
             analysis_query = build_analysis_query(request["question"], request["history"])
-        else:
-            analysis_query = clean_q
 
-        # 2. Xử lý nguồn tham khảo
+        # 3. Xử lý nguồn tham khảo
         context_parts = []
         source_names = set()
         for doc in docs:
@@ -676,14 +701,16 @@ async def chat_endpoint(payload: Any = Body(...)):
             context_parts.append(f"[Nguồn: {source_file}]\n{doc.page_content}")
             
         context = "\n\n".join(context_parts)
-        print(
-            "[rag] "
-            f"query='{retrieval_query[:160]}' "
-            f"sources={sorted(source_names)}"
-        )
+        if retrieval_query:
+            print(
+                "[rag] "
+                f"query='{retrieval_query[:160]}' "
+                f"sources={sorted(source_names)}"
+            )
 
+        # 4. Lấy nhật ký vườn (Chỉ khi chẩn đoán bệnh)
         farm_context = ""
-        if not is_greeting:
+        if intent == "DISEASE_DIAGNOSIS":
             farm_context = get_farm_context(request.get("user_id"), analysis_query)
             print(
                 "[api/chat] "
@@ -701,7 +728,7 @@ async def chat_endpoint(payload: Any = Body(...)):
         prompt_parts.append(f"Câu hỏi của người dùng: {request['question']}")
         prompt = "\n\n".join(prompt_parts)
         
-        # 3. Tạo lịch sử tin nhắn
+        # 5. Tạo lịch sử tin nhắn
         messages = [SystemMessage(content=system_template)]
         for msg in request["history"]:
             if msg["role"] == "user":
@@ -711,7 +738,7 @@ async def chat_endpoint(payload: Any = Body(...)):
                 
         messages.append(HumanMessage(content=prompt))
         
-        # 4. Trả lời
+        # 6. Trả lời
         response = selected_llm.invoke(messages)
         follow_up_questions = extract_follow_up_questions(response.content)
         follow_up_options = build_follow_up_options(follow_up_questions)
@@ -722,11 +749,14 @@ async def chat_endpoint(payload: Any = Body(...)):
             request["question"],
         )
         
-        disease_images_data = fetch_disease_images(request["question"], answer)
-        disease_images = [
-            DiseaseImage(name=item["name"], imageUrl=item["imageUrl"])
-            for item in disease_images_data
-        ]
+        # 7. Hiển thị ảnh bệnh (Chỉ khi chẩn đoán bệnh)
+        disease_images = []
+        if intent == "DISEASE_DIAGNOSIS":
+            disease_images_data = fetch_disease_images(request["question"], answer)
+            disease_images = [
+                DiseaseImage(name=item["name"], imageUrl=item["imageUrl"])
+                for item in disease_images_data
+            ]
         
         return ChatResponse(
             answer=answer,
