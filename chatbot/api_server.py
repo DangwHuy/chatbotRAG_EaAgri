@@ -654,12 +654,19 @@ async def chat_endpoint(payload: Any = Body(...)):
     selected_llm = llms[requested_model]
 
     try:
-        # 1. Tìm kiếm tài liệu (RAG)
-        retrieval_query = build_retrieval_query(request["question"], request["history"])
-        analysis_query = build_analysis_query(request["question"], request["history"])
-                
-        docs = retriever.invoke(retrieval_query)
+        # 1. Kiểm tra xem có phải câu chào hỏi ngắn không (để tối ưu Token)
+        clean_q = request["question"].strip().lower()
+        is_greeting = clean_q in ["hi", "hello", "chào", "chào bạn", "chào ad", "alo", "có ai không", "dạ"]
         
+        docs = []
+        if not is_greeting:
+            # Chỉ tìm kiếm tài liệu (RAG) nếu KHÔNG phải câu chào
+            retrieval_query = build_retrieval_query(request["question"], request["history"])
+            docs = retriever.invoke(retrieval_query)
+            analysis_query = build_analysis_query(request["question"], request["history"])
+        else:
+            analysis_query = clean_q
+
         # 2. Xử lý nguồn tham khảo
         context_parts = []
         source_names = set()
@@ -675,17 +682,22 @@ async def chat_endpoint(payload: Any = Body(...)):
             f"sources={sorted(source_names)}"
         )
 
-        farm_context = get_farm_context(request.get("user_id"), analysis_query)
-        print(
-            "[api/chat] "
-            f"user={mask_user_id(request.get('user_id'))} "
-            f"farm_context_chars={len(farm_context)}"
-        )
+        farm_context = ""
+        if not is_greeting:
+            farm_context = get_farm_context(request.get("user_id"), analysis_query)
+            print(
+                "[api/chat] "
+                f"user={mask_user_id(request.get('user_id'))} "
+                f"farm_context_chars={len(farm_context)}"
+            )
+
         prompt_parts = []
         if farm_context:
             prompt_parts.append(f"Ngữ cảnh vườn từ app:\n{farm_context}")
 
-        prompt_parts.append(f"Tài liệu tham khảo:\n{context}")
+        if context:
+            prompt_parts.append(f"Tài liệu tham khảo:\n{context}")
+            
         prompt_parts.append(f"Câu hỏi của người dùng: {request['question']}")
         prompt = "\n\n".join(prompt_parts)
         
