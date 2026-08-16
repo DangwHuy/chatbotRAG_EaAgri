@@ -114,7 +114,7 @@ def initialize_rag():
     # Lấy nhiều đoạn hơn một chút để giảm trường hợp tài liệu có nhưng retriever trả thiếu ngữ cảnh.
     retrievers = {
         "standard": vectorstore.as_retriever(search_kwargs={"k": 4}),
-        "expert": vectorstore.as_retriever(search_kwargs={"k": 12}),
+        "expert": vectorstore.as_retriever(search_kwargs={"k": 6}),
     }
     # Bỏ max_tokens để AI không bị ngắt câu giữa chừng
     llms = {
