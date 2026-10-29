@@ -324,11 +324,22 @@ def build_follow_up_options(questions: List[str]) -> List[Dict[str, Any]]:
 def remove_source_lines(answer: str) -> str:
     lines = []
     for line in answer.splitlines():
-        normalized = line.lower()
-        if "nguồn tham khảo" in normalized or "nguon tham khao" in normalized:
+        normalized = line.lower().strip()
+        if (
+            "nguồn tham khảo" in normalized
+            or "nguon tham khao" in normalized
+            or re.match(r"^[\*\(\[\s]*(?:nguồn|nguon)\s*:", normalized)
+        ):
             continue
         lines.append(line)
-    return "\n".join(lines).strip()
+    cleaned = "\n".join(lines).strip()
+    cleaned = re.sub(
+        r"\s*\*?\(\s*(?:Nguồn tham khảo|Nguồn)\s*:[^)]*\)\*?\s*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned.strip()
 
 
 def remove_follow_up_section(answer: str) -> str:
@@ -400,16 +411,77 @@ def compact_answer(answer: str, max_words: int = 150) -> str:
     return _ensure_sentence_end(compact)
 
 
-def build_source_citation(source_names: set) -> str:
-    visible_sources = sorted(source_names)[:3]
-    if not visible_sources:
+PRETTY_SOURCE_TITLES: Dict[str, str] = {
+    "0. duthaotcvn sauriengquatuoi.pdf": "Dự thảo TCVN — Sầu riêng quả tươi.pdf",
+    "13.pdf": "Tài liệu phân tích rủi ro canh tác cà phê.pdf",
+    "211225__quy_trinh_qlsb_sau_riengrevised.pdf": "Quy trình quản lý sâu bệnh hại sầu riêng.pdf",
+    "211225__quy_trinh_qlsb_sau_riengrevised_3pdf.pdf": "Quy trình quản lý tổng hợp sâu bệnh hại sầu riêng.pdf",
+    "2132012-tap chi so 1-5 (1).pdf": "Tạp chí Khoa học Công nghệ Nông nghiệp (Số 1–5).pdf",
+    "2132012-tap chi so 1-5.pdf": "Tạp chí Khoa học Công nghệ Nông nghiệp (Số 1–5).pdf",
+    "7. sâu hại trên cà phê ở phía bắc.pdf": "Tài liệu Sâu hại trên cây cà phê.pdf",
+    "clv_hd-ky-thuat-canh-tac_phong-tru-dich-hai_sau-rieng_final.pdf": "Hướng dẫn kỹ thuật canh tác & phòng trừ dịch hại sầu riêng.pdf",
+    "kỹ thuật tái canh cây cà phê.pdf": "Kỹ thuật tái canh cây cà phê.pdf",
+    "quyet-dinh-ban-hanh-quy-trinh-tai-canh-ca-phe-voi-2020.pdf": "Quy trình tái canh cà phê vối (Bộ NN&PTNT).pdf",
+    "quyet-dinh-ban-hanh-quy-trinh-tham-canh-ben-vung-ca-phe-2020.pdf": "Quy trình thâm canh bền vững cà phê (Bộ NN&PTNT).pdf",
+    "quyet-dinh-ban-hanh-quy-trinh-trong-xen-ca-phe-voi-2020.pdf": "Quy trình trồng xen cà phê vối (Bộ NN&PTNT).pdf",
+    "quy trình canh tác tiết kiệm cà phê vối.pdf": "Quy trình canh tác tiết kiệm cà phê vối.pdf",
+    "sr kinh doanh 2025 dong dau.pdf": "Quy trình kỹ thuật sầu riêng kinh doanh 2025.pdf",
+    "so tay huong dan kỹ thuat canh tac sau rieng thich ung bien doi khi hau.pdf": "Sổ tay kỹ thuật canh tác sầu riêng thích ứng biến đổi khí hậu.pdf",
+    "ton-vn-ti-liu-hi-tho-su-ring-30-4-2024.pdf": "Kỷ yếu Hội thảo phát triển sầu riêng bền vững.pdf",
+    "dongdau5144_04-08-2025-08-31-11_quy trinh kiem soat attp sau rieng tuoi xuat khau 30.7_250801181149__04082025081155_signed.pdf": "Quy trình kiểm soát ATTP sầu riêng tươi xuất khẩu.pdf",
+    "poster_huong_dan_san_xuat_ca_phe_che_ben_vung_danh_cho_tap_huan_vien.pdf": "Hướng dẫn sản xuất cà phê chè bền vững.pdf",
+    "so tay hd qua sau rieng vietgap.pdf": "Sổ tay hướng dẫn sản xuất sầu riêng VietGAP.pdf",
+    "tapchi12-2012-31.pdf": "Chuyên san Bảo vệ thực vật & Dịch hại cây trồng.pdf",
+    "tc9_3.pdf": "Tài liệu nghiên cứu sâu bệnh hại cây công nghiệp.pdf",
+}
+
+
+def prettify_source_name(filename: str) -> str:
+    clean_name = os.path.basename((filename or "").strip())
+    if not clean_name or clean_name == "Tài liệu ẩn":
         return ""
 
-    suffix = ""
-    if len(source_names) > 3:
-        suffix = f" và {len(source_names) - 3} tài liệu khác"
+    mapped = PRETTY_SOURCE_TITLES.get(clean_name.lower())
+    if mapped:
+        return mapped
 
-    return f"\n\n*(Nguồn tham khảo: {', '.join(visible_sources)}{suffix})*"
+    stem, ext = os.path.splitext(clean_name)
+    # Làm sạch các tiền tố mã số/timestamp thô nếu sau này thêm file mới
+    stem = re.sub(r"^(?:dongdau\d+[_\-\d]*|\d+[\.\-_\s]+)", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"[_]+", " ", stem)
+    stem = re.sub(r"\s*-\s*", " - ", stem)
+    stem = re.sub(r"\s{2,}", " ", stem).strip(" -_.")
+    if not stem:
+        stem = clean_name
+    elif stem.islower():
+        stem = stem[0].upper() + stem[1:]
+
+    return f"{stem}{ext.lower()}" if ext else stem
+
+
+def build_clean_sources(
+    raw_sources: List[str],
+    has_pest_disease_db: bool = False,
+) -> List[str]:
+    result: List[str] = []
+    seen = set()
+
+    for raw in raw_sources:
+        pretty = prettify_source_name(raw)
+        if not pretty:
+            continue
+        key = pretty.lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(pretty)
+
+    if has_pest_disease_db:
+        ea_db_title = "Kho dữ liệu sâu bệnh Ea Agri"
+        if ea_db_title.lower() not in seen:
+            seen.add(ea_db_title.lower())
+            result.append(ea_db_title)
+
+    return result
 
 
 def is_greeting_question(question: str) -> bool:
@@ -420,7 +492,7 @@ def is_greeting_question(question: str) -> bool:
     return bool(tokens) and len(tokens) <= 5 and bool(tokens & greeting_tokens)
 
 
-def should_append_sources(answer: str, source_names: set, question: str) -> bool:
+def should_append_sources(answer: str, source_names: Any, question: str) -> bool:
     if not source_names:
         return False
     if is_greeting_question(question):
@@ -432,37 +504,32 @@ def should_append_sources(answer: str, source_names: set, question: str) -> bool
         "chua co tai lieu",
         "không có tài liệu",
         "khong co tai lieu",
-        "không tìm thấy",
-        "khong tim thay",
+        "không tìm thấy tài liệu",
+        "khong tim thay tai lieu",
+        "chưa có trong kho dữ liệu",
+        "chua co trong kho du lieu",
+        "không có trong kho dữ liệu",
+        "khong co trong kho du lieu",
         "chưa ghi nhận",
         "chua ghi nhan",
-        "trong kho dữ liệu",
-        "trong kho du lieu",
         "kiến thức nông nghiệp thực tế",
         "kien thuc nong nghiep thuc te",
         "kiến thức chuyên môn mở rộng",
         "kien thuc chuyen mon mo rong",
-        "theo kiến thức",
-        "theo kien thuc",
+        "kiến thức nông nghiệp chung",
+        "kien thuc nong nghiep chung",
     ]
     return not any(marker in normalized for marker in no_doc_markers)
 
 
 def finalize_answer(
     answer: str,
-    source_names: set,
     follow_up_questions: List[str],
-    question: str,
 ) -> str:
-    # Lược bỏ câu trả lời dư thừa bằng cách loại bỏ các dòng ghi nguồn và câu hỏi làm rõ do LLM tự sinh
+    # Loại bỏ dòng ghi nguồn thô và phần câu hỏi làm rõ do LLM tự sinh (nguồn sẽ hiển thị qua UI badge riêng)
     clean_answer = remove_source_lines(answer).strip()
     base_answer = remove_follow_up_section(clean_answer) if follow_up_questions else clean_answer
-    final_answer = base_answer.strip()
-
-    if should_append_sources(final_answer, source_names, question):
-        final_answer += build_source_citation(source_names)
-
-    return final_answer
+    return base_answer.strip()
 
 
 def normalize_history(raw_history: Any) -> List[Dict[str, str]]:
@@ -715,12 +782,15 @@ async def chat_endpoint(payload: Any = Body(...)):
         elif intent == "FARM_INFO":
             analysis_query = build_analysis_query(request["question"], request["history"])
 
-        # 3. Xử lý nguồn tham khảo
+        # 3. Xử lý nguồn tham khảo (giữ thứ tự ưu tiên độ liên quan từ Retriever)
         context_parts = []
-        source_names = set()
+        raw_source_files: List[str] = []
+        seen_raw_sources = set()
         for doc in docs:
             source_file = os.path.basename(doc.metadata.get("source", "Tài liệu ẩn"))
-            source_names.add(source_file)
+            if source_file not in seen_raw_sources:
+                seen_raw_sources.add(source_file)
+                raw_source_files.append(source_file)
             context_parts.append(f"[Nguồn: {source_file}]\n{doc.page_content}")
             
         context = "\n\n".join(context_parts)
@@ -728,7 +798,7 @@ async def chat_endpoint(payload: Any = Body(...)):
             print(
                 "[rag] "
                 f"query='{retrieval_query[:160]}' "
-                f"sources={sorted(source_names)}"
+                f"sources={raw_source_files}"
             )
 
         # 4. Tra cứu Kho dữ liệu Sâu bệnh & Hình ảnh (pest_diseases) TRƯỚC khi gọi AI
@@ -788,11 +858,9 @@ async def chat_endpoint(payload: Any = Body(...)):
         follow_up_options = build_follow_up_options(follow_up_questions)
         answer = finalize_answer(
             response.content,
-            source_names,
             follow_up_questions,
-            request["question"],
         )
-        
+
         # 8. Tổng hợp hình ảnh sâu bệnh minh họa
         disease_images_data: List[Dict[str, str]] = list(pre_matched_images)
         if not disease_images_data and intent in {"DISEASE_DIAGNOSIS", "DISEASE_IMAGE"} and not img_requested:
@@ -807,10 +875,21 @@ async def chat_endpoint(payload: Any = Body(...)):
             DiseaseImage(name=item["name"], imageUrl=item["imageUrl"])
             for item in disease_images_data[:3]
         ]
-        
+
+        # 9. Chuẩn hóa danh sách nguồn tài liệu tham khảo (chỉ trả về khi câu trả lời thực sự dựa trên kho tài liệu)
+        candidate_sources = build_clean_sources(
+            raw_source_files,
+            has_pest_disease_db=bool(pest_disease_context or disease_images),
+        )
+        final_sources = (
+            candidate_sources
+            if should_append_sources(answer, candidate_sources, request["question"])
+            else []
+        )
+
         return ChatResponse(
             answer=answer,
-            sources=list(source_names),
+            sources=final_sources,
             needs_follow_up=bool(follow_up_questions),
             follow_up_questions=follow_up_questions,
             follow_up_options=follow_up_options,
