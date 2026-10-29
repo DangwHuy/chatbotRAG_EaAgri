@@ -8,12 +8,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # Import hàm khởi tạo từ file cũ để tận dụng logic có sẵn
 from farm_context import (
+    build_pest_disease_prompt_context,
+    fetch_disease_images,
     fetch_farm_records,
     format_farm_context,
     get_farm_context,
     get_firestore_client,
+    is_image_request,
     mask_user_id,
-    fetch_disease_images,
+    search_pest_diseases,
+    _get_pest_diseases_records,
 )
 from run_agriculture_bot import initialize_rag
 
@@ -40,28 +44,37 @@ llms = None
 system_template_standard = """Bạn là Trợ lý AI nông nghiệp (Tiêu chuẩn) của dự án Ea Agri.
 Đóng vai một trợ lý phản ứng nhanh, hỗ trợ bà con khi đang ở ngoài đồng.
 Hãy xưng hô là "tôi" hoặc "Ea Agri", và gọi người dùng là "bà con" hoặc "bạn" một cách tự nhiên.
-Quy tắc xưng hô: Mở đầu tự nhiên, không rập khuôn lặp lại câu chào.
+Quy tắc xưng hô: Chỉ chào ở lượt đầu tiên hoặc khi người dùng chào; các lượt tiếp theo đi thẳng vào vấn đề, không lặp lại "Chào bà con" hay "Chào bạn".
 Quy tắc trả lời:
-1. Trả lời NGẮN GỌN, đi thẳng vào vấn đề, dưới 150 chữ. Ưu tiên gạch đầu dòng.
-2. Dựa vào RAG để trả lời ngắn gọn, hoặc dùng kiến thức tổng hợp nếu RAG trống.
-3. Đối với nhật ký vườn: Chỉ nhắc nếu cực kỳ liên quan.
+1. Trả lời NGẮN GỌN, đi thẳng vào trọng tâm, dưới 150 chữ. Ưu tiên gạch đầu dòng dễ đọc.
+2. Ưu tiên dựa vào Kho dữ liệu Sâu bệnh và Tài liệu tham khảo của Ea Agri được cung cấp bên dưới (tuyệt đối không dùng từ "RAG", hãy gọi là "kho dữ liệu của Ea Agri"). Nếu kho dữ liệu chưa có, dùng kiến thức nông nghiệp thực tế để hỗ trợ.
+3. QUY TẮC HÌNH ẢNH SÂU BỆNH (RẤT QUAN TRỌNG):
+   - Ứng dụng Ea Agri CÓ tích hợp kho hình ảnh sâu bệnh thực tế tự động hiển thị ngay bên dưới tin nhắn của bạn.
+   - Khi ngữ cảnh báo [TRẠNG THÁI HÌNH ẢNH: Hệ thống ĐÃ TỰ ĐỘNG ĐÍNH KÈM...]: TUYỆT ĐỐI KHÔNG ĐƯỢC nói "không thể hiển thị hình ảnh trực tiếp". Hãy chủ động mời bà con xem ảnh thực tế ngay bên dưới và chỉ ra 2-3 dấu hiệu nhận diện chính trên ảnh.
+   - Chỉ khi người dùng xin xem ảnh mà ngữ cảnh báo chưa có ảnh trong kho, mới trả lời lịch sự: "Hiện kho hình ảnh của Ea Agri chưa cập nhật ảnh chụp thực tế cho bệnh này" rồi mô tả dấu hiệu nhận biết.
+4. Đối với nhật ký vườn: Chỉ nhắc nếu thực sự liên quan đến câu hỏi.
 """
 
 system_template_expert = """Bạn là Kỹ sư Nông nghiệp Cấp cao của dự án Ea Agri (Bản Chuyên sâu).
-Hãy xưng hô là "tôi" hoặc "Ea Agri", gọi người dùng là "bà con".
-Nhiệm vụ: Chẩn đoán nguyên nhân cốt lõi và đưa ra phác đồ điều trị chuẩn xác.
-QUAN TRỌNG: Nông dân rất bận và không thích đọc dài. BẮT BUỘC trả lời thật NGẮN GỌN, SÚC TÍCH (tối đa 200 - 250 chữ). TUYỆT ĐỐI KHÔNG dùng câu văn dài dòng lê thê. Dùng các gạch đầu dòng ngắn, làm nổi bật từ khóa chính (tên thuốc, hành động).
+Hãy xưng hô là "tôi" hoặc "Ea Agri", gọi người dùng là "bà con". Chỉ chào ở lượt đầu tiên, không lặp lại câu chào ở các lượt sau.
+Nhiệm vụ: Chẩn đoán nguyên nhân cốt lõi, đối chiếu kho dữ liệu của Ea Agri (không dùng từ "RAG") và đưa ra phác đồ chuẩn xác.
+QUAN TRỌNG: Nông dân rất bận và không thích đọc dài. BẮT BUỘC trả lời thật NGẮN GỌN, SÚC TÍCH (tối đa 200 - 250 chữ). TUYỆT ĐỐI KHÔNG dùng câu văn dài dòng lê thê. Dùng gạch đầu dòng ngắn, in đậm từ khóa chính (tên bệnh, hoạt chất/thuốc, hành động).
+
+CRITICAL RULE ĐỐI VỚI HÌNH ẢNH SÂU BỆNH:
+- Ứng dụng Ea Agri CÓ kho hình ảnh bệnh thực tế tự động đính kèm ngay bên dưới câu trả lời của bạn. TUYỆT ĐỐI CẤM nói "không thể hiển thị hình ảnh trực tiếp".
+- Khi ngữ cảnh có [TRẠNG THÁI HÌNH ẢNH: Hệ thống ĐÃ TỰ ĐỘNG ĐÍNH KÈM...]: Hãy mời bà con đối chiếu trực tiếp với hình ảnh thực tế đính kèm bên dưới. Nếu bà con chỉ hỏi xin hình ảnh nhận biết bệnh, hãy tập trung chỉ rõ đặc điểm nhận diện trên ảnh (vị trí, màu sắc, hình thái vết bệnh) và hướng xử lý tóm tắt.
 
 CRITICAL RULE ĐỐI VỚI NHẬT KÝ VƯỜN: 
 1. Nông dân có thể sở hữu nhiều mảnh vườn khác nhau. Tên vườn được ghi trong ngoặc vuông (vd: [Vườn Của Huy], [Vườn Chú Hai]) ở đầu mỗi hoạt động. TUYỆT ĐỐI KHÔNG gộp chung các hoạt động của Vườn A sang Vườn B để tránh chẩn đoán sai.
 2. Nếu người dùng đưa ra thông tin SAI so với nhật ký (ví dụ: họ nói "hôm qua và hôm kia tôi bón phân liên tục 2 ngày" nhưng nhật ký ghi 2 ngày bón cho 2 VƯỜN KHÁC NHAU, hoặc ghi ngày khác xa nhau), BẠN PHẢI TỈNH TÁO PHẢN BÁC LẠI NGAY LẬP TỨC: "Khoan đã, theo nhật ký thì..." để đính chính sự thật! KHÔNG ĐƯỢC hùa theo người dùng!
 
-Cấu trúc câu trả lời bắt buộc (ngắn gọn):
-1. 🔍 Nguyên nhân gốc rễ: 1-2 câu chỉ thẳng vấn đề. Đối chiếu nhanh với Nhật ký vườn xem có sai sót canh tác không (nếu có).
+Cấu trúc trả lời khi chẩn đoán / tư vấn trị bệnh (ngắn gọn):
+1. 🔍 Chẩn đoán & Nguyên nhân: 1-2 câu chỉ thẳng bệnh/vấn đề (nhắc bà con đối chiếu ảnh bên dưới nếu có, và đối chiếu Nhật ký vườn nếu liên quan).
 2. 💊 Phác đồ điều trị:
-   - Cấp bách: Tên thuốc, liều lượng, cách xử lý ngay lập tức (1-2 gạch đầu dòng).
-   - Phục hồi: Dưỡng lại cây sau bệnh (1 gạch đầu dòng).
+   - Cấp bách: Biện pháp canh tác + hoạt chất/thuốc đặc trị ngay lập tức (1-2 gạch đầu dòng).
+   - Phục hồi: Dưỡng lại cây/rễ sau bệnh (1 gạch đầu dòng).
 3. 🛡️ Khuyến cáo: 1 câu phòng ngừa ngắn gọn.
+(Lưu ý: Nếu bà con chỉ hỏi thông tin số lượng vườn/nhật ký hoặc chỉ xin xem ảnh nhận diện bệnh, hãy trả lời trực tiếp đúng trọng tâm câu hỏi, không ép vào khung điều trị cứng nhắc).
 """
 
 # Định nghĩa cấu trúc dữ liệu gửi lên và trả về
@@ -622,14 +635,21 @@ def verify_security(
 
 def analyze_user_intent(question: str, history: List[Dict[str, str]], llm) -> str:
     from langchain_core.messages import SystemMessage, HumanMessage
+
+    # Tối ưu tốc độ & tiết kiệm token: nhận diện tức thì câu chào ngắn hoặc câu xin xem ảnh bệnh
+    if is_greeting_question(question):
+        return "GREETING_OR_GENERAL"
+    if is_image_request(question):
+        return "DISEASE_IMAGE"
     
     prompt = f"""Bạn là một hệ thống phân loại ý định người dùng (Intent Router) cho Chatbot Nông nghiệp.
-Dựa vào câu hỏi hiện tại và lịch sử chat, hãy phân loại ý định của người dùng vào ĐÚNG 1 TRONG 4 NHÓM sau (chỉ trả về TÊN NHÓM, không giải thích gì thêm):
+Dựa vào câu hỏi hiện tại và lịch sử chat, hãy phân loại ý định của người dùng vào ĐÚNG 1 TRONG 5 NHÓM sau (chỉ trả về TÊN NHÓM, không giải thích gì thêm):
 
 1. GREETING_OR_GENERAL: Người dùng chỉ chào hỏi, cảm ơn, tán gẫu.
-2. FARM_QUERY: Người dùng hỏi kiến thức nông nghiệp chung chung (ví dụ: thời gian thu hoạch, kỹ thuật bón phân chung).
-3. FARM_INFO: Người dùng hỏi thông tin về cá nhân họ, vườn của họ (ví dụ: "tôi có bao nhiêu vườn", "hoạt động gần đây của tôi", "tổng số vườn").
-4. DISEASE_DIAGNOSIS: Người dùng mô tả triệu chứng bất thường của cây, hỏi về bệnh, vàng lá, rụng trái, hoặc cần tư vấn phác đồ điều trị cho vườn của họ.
+2. FARM_QUERY: Người dùng hỏi kiến thức kỹ thuật canh tác chung (ví dụ: thời gian thu hoạch, mật độ trồng, kỹ thuật bón phân chung).
+3. FARM_INFO: Người dùng hỏi thông tin cá nhân về vườn hoặc nhật ký của họ (ví dụ: "tôi có bao nhiêu vườn", "hoạt động gần đây của tôi", "tổng số vườn").
+4. DISEASE_IMAGE: Người dùng yêu cầu xem hình ảnh sâu bệnh hoặc hỏi thông tin nhận biết một loại sâu/bệnh chung mà chưa nhắc tới tình trạng vườn riêng của họ (ví dụ: "hình ảnh đốm rong", "cho xem ảnh nấm hồng", "bệnh thán thư là gì").
+5. DISEASE_DIAGNOSIS: Người dùng mô tả triệu chứng bất thường trên cây trong vườn của họ, hoặc cần chẩn đoán, tư vấn phác đồ điều trị sâu bệnh cho vườn của họ.
 
 Lịch sử chat gần nhất: {history[-2:] if history else 'Không có'}
 Câu hỏi của người dùng: "{question}"
@@ -639,6 +659,7 @@ Kết quả phân loại (chỉ xuất tên nhóm):"""
         response = llm.invoke([SystemMessage(content="Chỉ trả về tên nhóm."), HumanMessage(content=prompt)])
         intent = response.content.strip().upper()
         if "DISEASE_DIAGNOSIS" in intent: return "DISEASE_DIAGNOSIS"
+        if "DISEASE_IMAGE" in intent: return "DISEASE_IMAGE"
         if "FARM_INFO" in intent: return "FARM_INFO"
         if "FARM_QUERY" in intent: return "FARM_QUERY"
         return "GREETING_OR_GENERAL"
@@ -650,6 +671,8 @@ async def startup_event():
     global retrievers, llms
     print("Đang khởi tạo hệ thống AI cho FastAPI...")
     retrievers, llms = initialize_rag()
+    pest_records = _get_pest_diseases_records()
+    print(f"✅ Đã nạp {len(pest_records)} hồ sơ sâu bệnh & hình ảnh từ Firestore vào bộ nhớ đệm.")
     print("✅ Hệ thống AI đã sẵn sàng phục vụ App của bạn!")
 
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(verify_security)])
@@ -678,11 +701,18 @@ async def chat_endpoint(payload: Any = Body(...)):
         docs = []
         retrieval_query = ""
         analysis_query = request["question"].strip().lower()
+        recent_history_text = " - ".join(
+            msg.get("content", "").strip()
+            for msg in request["history"][-2:]
+            if msg.get("content", "").strip()
+        )
 
-        # 2. Xử lý RAG nếu không phải chào hỏi
-        if intent != "GREETING_OR_GENERAL":
+        # 2. Xử lý tài liệu tham khảo (nếu không phải chào hỏi hoặc chỉ hỏi thông tin danh sách vườn)
+        if intent not in {"GREETING_OR_GENERAL", "FARM_INFO"}:
             retrieval_query = build_retrieval_query(request["question"], request["history"])
             docs = selected_retriever.invoke(retrieval_query)
+            analysis_query = build_analysis_query(request["question"], request["history"])
+        elif intent == "FARM_INFO":
             analysis_query = build_analysis_query(request["question"], request["history"])
 
         # 3. Xử lý nguồn tham khảo
@@ -701,9 +731,27 @@ async def chat_endpoint(payload: Any = Body(...)):
                 f"sources={sorted(source_names)}"
             )
 
-        # 4. Lấy nhật ký vườn (Chỉ khi chẩn đoán bệnh hoặc hỏi thông tin vườn)
+        # 4. Tra cứu Kho dữ liệu Sâu bệnh & Hình ảnh (pest_diseases) TRƯỚC khi gọi AI
+        pest_disease_context = ""
+        pre_matched_images: List[Dict[str, str]] = []
+        img_requested = False
+
+        if intent in {"DISEASE_DIAGNOSIS", "DISEASE_IMAGE"}:
+            pest_disease_context, pre_matched_images, img_requested = build_pest_disease_prompt_context(
+                request["question"],
+                recent_history_text,
+            )
+        elif intent == "FARM_QUERY":
+            # Phòng hờ Router xếp câu hỏi tên sâu bệnh vào FARM_QUERY (kiểm tra trên RAM < 1ms)
+            if search_pest_diseases(request["question"], min_score=70, limit=1):
+                pest_disease_context, pre_matched_images, img_requested = build_pest_disease_prompt_context(
+                    request["question"],
+                    recent_history_text,
+                )
+
+        # 5. Lấy nhật ký vườn (Chỉ khi chẩn đoán bệnh thực tế cho vườn hoặc hỏi thông tin vườn)
         farm_context = ""
-        if intent in ["DISEASE_DIAGNOSIS", "FARM_INFO"]:
+        if intent in {"DISEASE_DIAGNOSIS", "FARM_INFO"}:
             farm_context = get_farm_context(request.get("user_id"), analysis_query)
             print(
                 "[api/chat] "
@@ -715,13 +763,16 @@ async def chat_endpoint(payload: Any = Body(...)):
         if farm_context:
             prompt_parts.append(f"Ngữ cảnh vườn từ app:\n{farm_context}")
 
+        if pest_disease_context:
+            prompt_parts.append(pest_disease_context)
+
         if context:
             prompt_parts.append(f"Tài liệu tham khảo:\n{context}")
             
         prompt_parts.append(f"Câu hỏi của người dùng: {request['question']}")
         prompt = "\n\n".join(prompt_parts)
         
-        # 5. Tạo lịch sử tin nhắn
+        # 6. Tạo lịch sử tin nhắn
         messages = [SystemMessage(content=current_system_template)]
         for msg in request["history"]:
             if msg["role"] == "user":
@@ -731,7 +782,7 @@ async def chat_endpoint(payload: Any = Body(...)):
                 
         messages.append(HumanMessage(content=prompt))
         
-        # 6. Trả lời
+        # 7. Trả lời
         response = selected_llm.invoke(messages)
         follow_up_questions = extract_follow_up_questions(response.content)
         follow_up_options = build_follow_up_options(follow_up_questions)
@@ -742,14 +793,20 @@ async def chat_endpoint(payload: Any = Body(...)):
             request["question"],
         )
         
-        # 7. Hiển thị ảnh bệnh (Chỉ khi chẩn đoán bệnh)
-        disease_images = []
-        if intent == "DISEASE_DIAGNOSIS":
-            disease_images_data = fetch_disease_images(request["question"], answer)
-            disease_images = [
-                DiseaseImage(name=item["name"], imageUrl=item["imageUrl"])
-                for item in disease_images_data
-            ]
+        # 8. Tổng hợp hình ảnh sâu bệnh minh họa
+        disease_images_data: List[Dict[str, str]] = list(pre_matched_images)
+        if not disease_images_data and intent in {"DISEASE_DIAGNOSIS", "DISEASE_IMAGE"} and not img_requested:
+            # Trường hợp người dùng chỉ tả triệu chứng, và câu trả lời của AI mới chẩn đoán ra tên bệnh cụ thể
+            disease_images_data = fetch_disease_images(
+                request["question"],
+                answer,
+                recent_history_text,
+            )
+
+        disease_images = [
+            DiseaseImage(name=item["name"], imageUrl=item["imageUrl"])
+            for item in disease_images_data[:3]
+        ]
         
         return ChatResponse(
             answer=answer,

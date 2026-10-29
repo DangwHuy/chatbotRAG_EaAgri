@@ -1,6 +1,7 @@
 import os
 import glob
 import re
+import time
 import unicodedata
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -20,8 +21,12 @@ DEFAULT_DIARY_LIMIT = int(os.getenv("FARM_DIARY_LIMIT", "24"))
 DIARY_CONTEXT_LIMIT = int(os.getenv("FARM_DIARY_CONTEXT_LIMIT", "8"))
 MAX_CONTEXT_CHARS = int(os.getenv("FARM_CONTEXT_MAX_CHARS", "4200"))
 
+PEST_DISEASES_CACHE_TTL = int(os.getenv("PEST_DISEASES_CACHE_TTL", "300"))
+
 _firestore_client = None
 _firestore_error_logged = False
+_pest_diseases_cache: List[Tuple[str, Dict[str, Any]]] = []
+_pest_diseases_cache_ts: float = 0.0
 
 
 FIELD_LABELS = {
@@ -341,9 +346,11 @@ def _format_value(value: Any) -> str:
 
 
 def _normalize_search_text(text: str) -> str:
-    decomposed = unicodedata.normalize("NFD", text.lower())
+    lowered = (text or "").lower().replace("đ", "d")
+    decomposed = unicodedata.normalize("NFD", lowered)
     no_accents = "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
-    return re.sub(r"[^a-z0-9\s]", " ", no_accents)
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", no_accents)
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def _tokens(text: str) -> List[str]:
@@ -576,94 +583,469 @@ def get_farm_context(
     return context
 
 
-def fetch_disease_images(question: str, answer: str) -> List[Dict[str, str]]:
-    """
-    Truy vấn Firestore collection 'pest_diseases' để lấy hình ảnh bệnh minh họa
-    nếu câu hỏi hoặc câu trả lời có nhắc đến tên bệnh hoặc tags của bệnh đó.
-    """
+GENERIC_DISEASE_TAGS = {
+    "benh", "benh la", "benh re", "benh cay", "benh sau rieng",
+    "nam", "nam benh", "nam dot", "nam trai", "con trung", "dich hai",
+    "sau rieng", "cay sau rieng", "ca phe", "cay ca phe", "ho tieu", "tieu", "bo",
+    "la", "la non", "la gia", "la sau rieng", "dot", "dot non", "choi", "choi non",
+    "than", "canh", "canh non", "re", "re non", "re to", "re sau rieng", "goc", "co re",
+    "hoa", "bong", "hoa sau rieng", "trai", "qua", "trai non", "cuong", "cuong trai", "vo trai",
+    "cay con", "chet cay", "mua mua", "mua kho", "mua lon", "do am cao", "dat yem khi",
+    "chich hut", "kien", "mat ngot",
+}
+
+BROAD_SYMPTOM_TAGS = {
+    "vang la", "la vang", "chay la", "rung la", "rung trai", "rung hoa",
+    "dom nau", "dom vang", "heo la", "heo canh", "heo cay", "cay heo",
+    "kho canh", "kho dot", "kho ngon", "kho bong", "chet ngon", "chet dot",
+    "thoi re", "thoi than", "thoi goc", "thoi trai", "lo duc", "ri nhua",
+    "chay nhua", "nghet re", "thieu oxy", "re den", "re nau", "suy re",
+    "mun go", "phan sau", "khuyet la", "thung la", "can la", "hai re",
+    "xoan la", "seo trai", "quang vang", "giam dau trai", "hoa nau den",
+    "co re nau den", "not sung re", "lop bot trang", "lop sap trang", "bui than",
+    "sau non", "ung nuoc", "ngap ung",
+}
+
+SCIENTIFIC_LATIN_TERMS = {
+    "cephaleuros", "colletotrichum", "phytophthora", "fusarium", "rhizoctonia",
+    "phomopsis", "erythricium", "xyleborus", "psyllid", "thrips", "nematode",
+    "pythium", "lasiodiplodia", "cercospora",
+}
+
+KNOWN_CROP_ALIASES = {
+    "sau rieng": ["sau rieng"],
+    "ca phe": ["ca phe", "coffee"],
+    "ho tieu": ["ho tieu", "cay tieu", "hat tieu"],
+    "bo": ["cay bo", "qua bo", "trai bo"],
+    "mac ca": ["mac ca", "macca"],
+    "cao su": ["cao su"],
+    "dieu": ["cay dieu", "hat dieu"],
+}
+
+
+def _normalize_accented_text(text: str) -> str:
+    lowered = (text or "").lower()
+    cleaned = re.sub(r"[^\w\sà-ỹ]", " ", lowered)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _extract_image_url(data: Dict[str, Any]) -> str:
+    for key in ("imageUrl", "image", "thumbnailUrl"):
+        val = (data.get(key) or "").strip() if isinstance(data.get(key), str) else ""
+        if val.startswith("http"):
+            return val
+    for list_key in ("imageUrls", "images"):
+        items = data.get(list_key)
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, str) and item.strip().startswith("http"):
+                    return item.strip()
+                if isinstance(item, dict):
+                    u = (item.get("url") or item.get("imageUrl") or "").strip()
+                    if u.startswith("http"):
+                        return u
+    return ""
+
+
+def _get_pest_diseases_records() -> List[Tuple[str, Dict[str, Any]]]:
+    global _pest_diseases_cache, _pest_diseases_cache_ts
+    now = time.time()
+    if _pest_diseases_cache and (now - _pest_diseases_cache_ts) < PEST_DISEASES_CACHE_TTL:
+        return _pest_diseases_cache
+
+    db = get_firestore_client()
+    if db is None:
+        return _pest_diseases_cache
+
     try:
-        db = get_firestore_client()
-        if db is None:
-            return []
-
-        docs = db.collection("pest_diseases").stream()
-        
-        combined_text = f"{question} {answer}".lower()
-        matched_images = []
-        seen_urls = set()
-
-        for doc in docs:
+        records: List[Tuple[str, Dict[str, Any]]] = []
+        for doc in db.collection("pest_diseases").stream():
             data = doc.to_dict() or {}
             if data.get("isActive") is False:
                 continue
-                
-            image_url = (data.get("imageUrl") or "").strip()
-            if not image_url or not image_url.startswith("http"):
+            records.append((doc.id, data))
+        _pest_diseases_cache = records
+        _pest_diseases_cache_ts = now
+        return records
+    except Exception as exc:
+        print(f"[farm_context] Lỗi tải cache pest_diseases: {exc}")
+        return _pest_diseases_cache
+
+
+def _detect_mentioned_crops(text: str) -> set:
+    norm_pad = f" {_normalize_search_text(text)} "
+    found = set()
+    for canonical_crop, aliases in KNOWN_CROP_ALIASES.items():
+        if any(f" {alias} " in norm_pad for alias in aliases):
+            found.add(canonical_crop)
+    return found
+
+
+def _extract_core_disease_phrases(name: str) -> List[Tuple[str, str]]:
+    if not name:
+        return []
+    raw_parts = [p.strip() for p in re.split(r"[,;()/]+", name) if p.strip()]
+    raw_parts.insert(0, re.sub(r"\([^)]*\)", " ", name).strip())
+
+    variants: List[Tuple[str, str]] = []
+    seen_norm = set()
+
+    strip_prefixes_acc = ("bệnh nấm ", "bệnh ", "côn trùng ")
+    strip_suffixes_acc = (
+        " hại rễ sầu riêng",
+        " hại sầu riêng",
+        " trên sầu riêng",
+        " sầu riêng",
+        " hại cà phê",
+        " cà phê",
+        " hồ tiêu",
+    )
+
+    for part in raw_parts:
+        acc = _normalize_accented_text(part)
+        if not acc:
+            continue
+
+        candidates_acc = [acc]
+        trimmed = acc
+        for pref in strip_prefixes_acc:
+            if trimmed.startswith(pref):
+                trimmed = trimmed[len(pref):].strip()
+        for suff in strip_suffixes_acc:
+            if trimmed.endswith(suff):
+                trimmed = trimmed[:-len(suff)].strip()
+        if trimmed and trimmed != acc:
+            candidates_acc.append(trimmed)
+
+        for cand_acc in candidates_acc:
+            cand_norm = _normalize_search_text(cand_acc)
+            if not cand_norm or cand_norm in GENERIC_DISEASE_TAGS or cand_norm in seen_norm:
+                continue
+            if len(cand_norm.split()) >= 2 or len(cand_norm) >= 5:
+                seen_norm.add(cand_norm)
+                variants.append((cand_acc, cand_norm))
+
+    return variants
+
+
+def is_image_request(question: str) -> bool:
+    norm = _normalize_search_text(question)
+    if not norm:
+        return False
+    padded = f" {norm} "
+    image_phrases = (
+        " hinh anh ",
+        " xem anh ",
+        " cho anh ",
+        " xin anh ",
+        " xem hinh ",
+        " cho hinh ",
+        " anh benh ",
+        " hinh benh ",
+        " anh thuc te ",
+        " hinh thuc te ",
+        " co anh ",
+        " co hinh ",
+        " gui anh ",
+        " gui hinh ",
+        " anh sau ",
+        " anh nam ",
+    )
+    if any(phrase in padded for phrase in image_phrases):
+        return True
+    words = norm.split()
+    if len(words) >= 2 and words[0] in {"anh", "hinh"}:
+        return True
+    return False
+
+
+def _has_anaphora_disease_ref(question: str) -> bool:
+    padded = f" {_normalize_search_text(question)} "
+    refs = (" benh do ", " benh nay ", " con do ", " sau do ", " loai nay ", " loai do ", " cua no ")
+    return any(r in padded for r in refs) or _normalize_search_text(question) in {
+        "cho xem anh", "cho xem hinh", "co anh khong", "co hinh anh khong", "hinh anh", "xem anh"
+    }
+
+
+def search_pest_diseases(
+    question: str,
+    answer: str = "",
+    history_text: str = "",
+    limit: int = 3,
+    min_score: int = 60,
+) -> List[Dict[str, Any]]:
+    records = _get_pest_diseases_records()
+    if not records:
+        return []
+
+    q_norm = _normalize_search_text(question)
+    a_norm = _normalize_search_text(answer)
+    q_acc = _normalize_accented_text(question)
+    a_acc = _normalize_accented_text(answer)
+
+    q_norm_pad = f" {q_norm} " if q_norm else ""
+    a_norm_pad = f" {a_norm} " if a_norm else ""
+    q_acc_pad = f" {q_acc} " if q_acc else ""
+    a_acc_pad = f" {a_acc} " if a_acc else ""
+
+    # Xác định loại cây trồng đang được nhắc tới (nếu có)
+    mentioned_crops = _detect_mentioned_crops(question)
+    if not mentioned_crops and (history_text or answer):
+        mentioned_crops = _detect_mentioned_crops(f"{history_text} {answer}")
+
+    # BƯỚC 1: Tìm tất cả cụm tên bệnh cốt lõi khớp trong question / answer để khử trùng lặp cụm con (vd: "đốm lá" nằm trong "đốm lá mắt cua")
+    all_q_matched_cores: set = set()
+    all_a_matched_cores: set = set()
+    doc_prepared = []
+
+    for doc_id, data in records:
+        name = (data.get("name") or "").strip()
+        raw_crops = data.get("crops") or []
+        if isinstance(raw_crops, str):
+            raw_crops = [raw_crops]
+        doc_crops_norm = {_normalize_search_text(str(c)) for c in raw_crops if str(c).strip()}
+
+        if doc_crops_norm and mentioned_crops and not (doc_crops_norm & mentioned_crops):
+            continue
+
+        core_phrases = _extract_core_disease_phrases(name)
+        for _, c_norm in core_phrases:
+            if q_norm_pad and f" {c_norm} " in q_norm_pad:
+                all_q_matched_cores.add(c_norm)
+            if a_norm_pad and f" {c_norm} " in a_norm_pad:
+                all_a_matched_cores.add(c_norm)
+
+        doc_prepared.append((doc_id, data, name, doc_crops_norm, core_phrases))
+
+    def _is_strictly_subsumed(phrase: str, matched_set: set, padded_text: str) -> bool:
+        longer = [m for m in matched_set if m != phrase and f" {phrase} " in f" {m} "]
+        if not longer:
+            return False
+        scrubbed = padded_text
+        for lg in sorted(longer, key=len, reverse=True):
+            scrubbed = scrubbed.replace(f" {lg} ", " ")
+        return f" {phrase} " not in scrubbed
+
+    scored_results: List[Dict[str, Any]] = []
+
+    for doc_id, data, name, doc_crops_norm, core_phrases in doc_prepared:
+        score = 0
+
+        # 1. Chấm điểm khớp Tên bệnh cốt lõi
+        best_q_core = 0
+        best_a_core = 0
+        for c_acc, c_norm in core_phrases:
+            w_count = len(c_norm.split())
+            if q_norm_pad and f" {c_norm} " in q_norm_pad:
+                if not _is_strictly_subsumed(c_norm, all_q_matched_cores, q_norm_pad):
+                    pts = 150 + w_count * 15 + (15 if f" {c_acc} " in q_acc_pad else 0)
+                    best_q_core = max(best_q_core, pts)
+            elif a_norm_pad and f" {c_norm} " in a_norm_pad:
+                if not _is_strictly_subsumed(c_norm, all_a_matched_cores, a_norm_pad):
+                    pts = 85 + w_count * 10 + (10 if f" {c_acc} " in a_acc_pad else 0)
+                    best_a_core = max(best_a_core, pts)
+
+        score += best_q_core + best_a_core
+
+        # 2. Chấm điểm Tags (tách biệt Tag định danh đặc hiệu và Tag triệu chứng rộng)
+        raw_tags = data.get("tags") or []
+        if isinstance(raw_tags, str):
+            raw_tags = [raw_tags]
+
+        best_specific_tag = 0
+        broad_symptom_pts = 0
+
+        for raw_t in raw_tags:
+            t_acc = _normalize_accented_text(str(raw_t))
+            t_norm = _normalize_search_text(str(raw_t))
+            if not t_norm or t_norm in GENERIC_DISEASE_TAGS or t_norm in doc_crops_norm:
                 continue
 
-            name = (data.get("name") or "").strip()
-            tags = data.get("tags") or []
-            crops = data.get("crops") or []
-            
-            if isinstance(tags, str):
-                tags = [tags]
-            if isinstance(crops, str):
-                crops = [crops]
+            words = t_norm.split()
+            if len(words) == 1:
+                if t_norm in SCIENTIFIC_LATIN_TERMS or (t_norm.isascii() and len(t_norm) >= 6 and t_acc == t_norm):
+                    if q_norm_pad and f" {t_norm} " in q_norm_pad:
+                        best_specific_tag = max(best_specific_tag, 115)
+                    elif a_norm_pad and f" {t_norm} " in a_norm_pad:
+                        best_specific_tag = max(best_specific_tag, 65)
+                else:
+                    # Từ đơn tiếng Việt (vd: "tảo", "rong") chỉ khớp khi gõ đúng dấu để tránh nhầm "tạo", "rộng"
+                    if len(t_acc) >= 3:
+                        if q_acc_pad and f" {t_acc} " in q_acc_pad:
+                            best_specific_tag = max(best_specific_tag, 55)
+                        elif a_acc_pad and f" {t_acc} " in a_acc_pad:
+                            best_specific_tag = max(best_specific_tag, 25)
+            else:
+                if t_norm in BROAD_SYMPTOM_TAGS:
+                    if q_norm_pad and f" {t_norm} " in q_norm_pad:
+                        broad_symptom_pts += 22
+                    elif a_norm_pad and f" {t_norm} " in a_norm_pad:
+                        broad_symptom_pts += 8
+                else:
+                    if q_norm_pad and f" {t_norm} " in q_norm_pad:
+                        if not _is_strictly_subsumed(t_norm, all_q_matched_cores, q_norm_pad):
+                            pts = 110 + len(words) * 10 + (10 if f" {t_acc} " in q_acc_pad else 0)
+                            best_specific_tag = max(best_specific_tag, pts)
+                    elif a_norm_pad and f" {t_norm} " in a_norm_pad:
+                        if not _is_strictly_subsumed(t_norm, all_a_matched_cores, a_norm_pad):
+                            pts = 60 + len(words) * 5 + (5 if f" {t_acc} " in a_acc_pad else 0)
+                            best_specific_tag = max(best_specific_tag, pts)
 
-            # 1. Kiểm tra xem bệnh có khớp không (dựa vào name và tags)
-            keywords = []
-            if name:
-                clean_name = name.lower().replace("bệnh", "").strip()
-                if clean_name and len(clean_name) > 2:
-                    keywords.append(clean_name)
-                keywords.append(name.lower())
-            
-            for t in tags:
-                t_str = str(t).lower().strip()
-                if t_str and len(t_str) > 2:
-                    keywords.append(t_str)
+        # Nếu đã khớp Core Name thì Tag đặc hiệu chỉ cộng thưởng nhỏ; nếu chưa khớp Core Name thì dùng điểm Tag đặc hiệu
+        if best_q_core > 0 or best_a_core > 0:
+            score += min(25, best_specific_tag // 5)
+        else:
+            score += best_specific_tag
 
-            # Loại bỏ các từ khóa trùng với tên cây trồng (để tránh lấy ảnh bệnh khi chỉ nhắc đến tên cây)
-            crop_lower_list = [str(c).lower().strip() for c in crops if c]
-            filtered_keywords = []
-            for kw in keywords:
-                if kw in crop_lower_list:
-                    continue
-                filtered_keywords.append(kw)
+        score += min(55, broad_symptom_pts)
 
-            # Nếu không còn từ khoá bệnh nào hợp lệ sau khi lọc, bỏ qua
-            if not filtered_keywords:
-                continue
+        # Ưu tiên nhẹ cây Sầu riêng khi người dùng không chỉ định loại cây
+        if score > 0 and not mentioned_crops and "sau rieng" in doc_crops_norm:
+            score += 5
 
-            is_disease_match = any(kw in combined_text for kw in filtered_keywords)
-            if not is_disease_match:
-                continue
-                
-            # 2. Kiểm tra loại cây trồng (crops) nếu database có khai báo
-            if crops:
-                crop_matched = False
-                for c in crops:
-                    c_str = str(c).lower().strip()
-                    # Nếu text có chứa tên cây (vd: "cà phê", "sầu riêng")
-                    if c_str and c_str in combined_text:
-                        crop_matched = True
-                        break
-                
-                # Nếu database có gán loại cây, nhưng text không hề nhắc tới cây đó -> Bỏ qua ảnh này
-                if not crop_matched:
-                    continue
+        if score >= min_score:
+            scored_results.append({
+                "id": doc_id,
+                "score": score,
+                "name": name or "Hình ảnh sâu bệnh",
+                "imageUrl": _extract_image_url(data),
+                "data": data,
+            })
 
-            if image_url not in seen_urls:
+    if not scored_results:
+        return []
+
+    scored_results.sort(key=lambda item: -item["score"])
+    top_score = scored_results[0]["score"]
+    cutoff = max(min_score, int(top_score * 0.72)) if min_score >= 60 else min_score
+
+    return [item for item in scored_results if item["score"] >= cutoff][:limit]
+
+
+def _format_pest_disease_card(item: Dict[str, Any]) -> str:
+    data = item["data"]
+    name = item["name"]
+    crops = _format_value(data.get("crops")) or "Sầu riêng"
+    emergency = _format_value(data.get("emergency_level"))
+    parts = _format_value(data.get("affected_parts"))
+    season = _format_value(data.get("season"))
+
+    meta_bits = [f"Cây: {crops}"]
+    if emergency:
+        meta_bits.append(f"Nguy hại: {emergency}")
+    if parts:
+        meta_bits.append(f"Bộ phận: {parts}")
+    if season:
+        meta_bits.append(f"Mùa: {season}")
+
+    lines = [f"- {name} ({' | '.join(meta_bits)})"]
+
+    def _join_bullets(raw_val: Any, max_items: int) -> str:
+        items = [raw_val] if isinstance(raw_val, str) else (raw_val or [])
+        cleaned = [str(x).strip().rstrip(".;,") for x in items[:max_items] if str(x).strip()]
+        return "; ".join(cleaned)
+
+    sym_text = _join_bullets(data.get("symptoms"), 4)
+    if sym_text:
+        lines.append(f"  + Triệu chứng chuẩn: {sym_text}.")
+
+    trt_text = _join_bullets(data.get("treatment"), 4)
+    if trt_text:
+        lines.append(f"  + Xử lý chuẩn: {trt_text}.")
+
+    prv_text = _join_bullets(data.get("prevention"), 2)
+    if prv_text:
+        lines.append(f"  + Phòng ngừa: {prv_text}.")
+
+    return "\n".join(lines)
+
+
+def build_pest_disease_prompt_context(
+    question: str,
+    history_text: str = "",
+) -> Tuple[str, List[Dict[str, str]], bool]:
+    """
+    Tra cứu kho pest_diseases TRƯỚC khi gọi LLM để:
+    1. Cung cấp kiến thức triệu chứng/điều trị chuẩn từ Firestore cho AI.
+    2. Báo rõ cho AI biết ảnh bệnh nào ĐÃ ĐƯỢC ĐÍNH KÈM bên dưới tin nhắn (tránh AI tự chối không hiển thị được ảnh).
+    """
+    img_req = is_image_request(question)
+
+    strong_matches = search_pest_diseases(question=question, history_text=history_text, limit=3, min_score=60)
+    if not strong_matches and history_text and (img_req or _has_anaphora_disease_ref(question)):
+        strong_matches = search_pest_diseases(question=history_text, limit=2, min_score=70)
+
+    pre_images: List[Dict[str, str]] = []
+    seen_urls = set()
+    for item in strong_matches:
+        url = item["imageUrl"]
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            pre_images.append({"name": item["name"], "imageUrl": url})
+
+    knowledge_matches = strong_matches
+    if not knowledge_matches:
+        knowledge_matches = search_pest_diseases(question=question, history_text=history_text, limit=2, min_score=22)
+
+    sections: List[str] = []
+    if knowledge_matches:
+        cards = [_format_pest_disease_card(item) for item in knowledge_matches[:2]]
+        sections.append("Dữ liệu từ Kho Sâu Bệnh của Ea Agri (ưu tiên đối chiếu):\n" + "\n".join(cards))
+
+    if pre_images:
+        attached_names = ", ".join(f"[{img['name']}]" for img in pre_images)
+        sections.append(
+            f"[TRẠNG THÁI HÌNH ẢNH]: Hệ thống ĐÃ TỰ ĐỘNG ĐÍNH KÈM {len(pre_images)} hình ảnh thực tế "
+            f"({attached_names}) hiển thị ngay bên dưới câu trả lời này trên màn hình ứng dụng. "
+            "TUYỆT ĐỐI KHÔNG nói 'không thể hiển thị hình ảnh'; hãy chủ động mời bà con quan sát hình ảnh bên dưới "
+            "và chỉ rõ các đặc điểm nhận diện chính trên ảnh!"
+        )
+    elif img_req:
+        sections.append(
+            "[TRẠNG THÁI HÌNH ẢNH]: Người dùng đang yêu cầu xem hình ảnh, nhưng hiện Kho hình ảnh của Ea Agri "
+            "chưa có ảnh chụp khớp trực tiếp với tên bệnh trong câu hỏi. TUYỆT ĐỐI KHÔNG nói máy móc 'AI không thể hiển thị hình ảnh'; "
+            "hãy báo lịch sự 'Hiện kho hình ảnh của Ea Agri chưa cập nhật ảnh chụp thực tế cho bệnh này' rồi mô tả ngắn gọn dấu hiệu nhận diện bằng mắt thường."
+        )
+
+    return "\n\n".join(sections), pre_images, img_req
+
+
+def fetch_disease_images(
+    question: str,
+    answer: str = "",
+    history_text: str = "",
+) -> List[Dict[str, str]]:
+    """
+    Truy vấn kho 'pest_diseases' (có cache RAM + hỗ trợ không dấu) để lấy hình ảnh bệnh minh họa
+    khớp chính xác với bệnh trong câu hỏi hoặc chẩn đoán của AI.
+    """
+    try:
+        matches = search_pest_diseases(
+            question=question,
+            answer=answer,
+            history_text=history_text,
+            limit=3,
+            min_score=60,
+        )
+        if not matches and history_text and (is_image_request(question) or _has_anaphora_disease_ref(question)):
+            matches = search_pest_diseases(question=history_text, limit=2, min_score=70)
+
+        matched_images: List[Dict[str, str]] = []
+        seen_urls = set()
+        for item in matches:
+            image_url = item["imageUrl"]
+            if image_url and image_url not in seen_urls:
                 seen_urls.add(image_url)
                 matched_images.append({
-                    "name": name or "Hình ảnh bệnh",
-                    "imageUrl": image_url
+                    "name": item["name"],
+                    "imageUrl": image_url,
                 })
                 if len(matched_images) >= 3:
                     break
-                        
+
         return matched_images
     except Exception as exc:
         print(f"[farm_context] Lỗi khi truy vấn pest_diseases: {exc}")
         return []
+
 
