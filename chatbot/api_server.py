@@ -433,6 +433,8 @@ PRETTY_SOURCE_TITLES: Dict[str, str] = {
     "so tay hd qua sau rieng vietgap.pdf": "Sổ tay hướng dẫn sản xuất sầu riêng VietGAP.pdf",
     "tapchi12-2012-31.pdf": "Chuyên san Bảo vệ thực vật & Dịch hại cây trồng.pdf",
     "tc9_3.pdf": "Tài liệu nghiên cứu sâu bệnh hại cây công nghiệp.pdf",
+    "tài liệu ea ai  nội bộ.pdf": "Tài liệu Ea AI Nội Bộ.pdf",
+    "tài liệu ea ai nội bộ.pdf": "Tài liệu Ea AI Nội Bộ.pdf",
 }
 
 

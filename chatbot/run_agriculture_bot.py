@@ -70,12 +70,15 @@ def initialize_rag():
     base_folder = "knowledge-base"
     vectorstore = Chroma(persist_directory=db_name, embedding_function=embeddings)
     
-    # Lấy danh sách các file đã được nhúng trong DB
+    # Lấy danh sách các file đã được nhúng trong DB (chuẩn hóa đường dẫn đa nền tảng Windows/Linux)
     existing_data = vectorstore.get(include=["metadatas"])
     existing_sources = set()
+    existing_basenames = set()
     for meta in existing_data.get("metadatas", []):
         if meta and "source" in meta:
-            existing_sources.add(os.path.normpath(meta["source"]))
+            raw_src = str(meta["source"]).replace("\\", "/")
+            existing_sources.add(os.path.normpath(raw_src).replace("\\", "/"))
+            existing_basenames.add(os.path.basename(raw_src))
             
     # Quét thư mục TẤT CẢ các thư mục con để tìm file PDF mới
     from langchain_community.document_loaders import PyPDFLoader
@@ -83,9 +86,10 @@ def initialize_rag():
     new_documents = []
     
     for pdf_file in pdf_files:
-        norm_path = os.path.normpath(pdf_file)
-        if norm_path not in existing_sources:
-            print(f"📄 Phát hiện tài liệu mới: {os.path.basename(pdf_file)}")
+        norm_path = os.path.normpath(pdf_file).replace("\\", "/")
+        base_name = os.path.basename(norm_path)
+        if norm_path not in existing_sources and base_name not in existing_basenames:
+            print(f"📄 Phát hiện tài liệu mới: {base_name}")
             loader = PyPDFLoader(pdf_file)
             new_documents.extend(loader.load())
             
@@ -102,7 +106,11 @@ def initialize_rag():
         
         if len(chunks) > 0:
             print("Đang gửi dữ liệu mới cho Gemini nhúng (Vui lòng chờ)...")
-            vectorstore.add_documents(chunks)
+            batch_size = 80
+            for i in range(0, len(chunks), batch_size):
+                batch = chunks[i : i + batch_size]
+                vectorstore.add_documents(batch)
+                print(f"  -> Đã nhúng {min(i + batch_size, len(chunks))}/{len(chunks)} chunks")
             print("✅ Đã cập nhật xong dữ liệu mới vào hệ thống!")
         else:
             print("⚠️ CẢNH BÁO: Tài liệu mới tải lên là file ảnh hoặc file rỗng (không có chữ dạng Text). Hệ thống đã bỏ qua.")
